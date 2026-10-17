@@ -6,7 +6,7 @@ It runs from the Ansible control node inside the VNet, in **push mode**, on two 
 
 ## Status
 
-Written 2026-10-16. Statically checked: every playbook passes `--syntax-check` under ansible-core 2.21, `ansible-lint` reports nothing new against the AWS baseline, the inventory file renders the expected groups from fake VM data, and the Key Vault lookups, the multi-service deployment loop and the webhook alert were exercised against mocks. **It has not run against a live Azure estate yet.** The first live gate is step 4 of the work breakdown: `ansible-inventory --graph` on the control node shows the hosts in the right groups.
+Written 2026-10-16. Statically checked: every playbook passes `--syntax-check` under ansible-core 2.21, `ansible-lint` reports nothing new against the AWS baseline, the inventory file renders the expected groups from fake VM data, and the Key Vault lookups and the multi-service deployment loop were exercised against mocks. **It has not run against a live Azure estate yet.** The first live gate is step 4 of the work breakdown: `ansible-inventory --graph` on the control node shows the hosts in the right groups.
 
 ## How it joins the Terraform
 
@@ -17,7 +17,7 @@ Neither repo references the other by resource ID. They meet at three contracts, 
 | **Tags → groups** | VM tags `ManagedBy=Terraform`, `Environment`, `OS`, `Distro`, `OSVersion` (RHEL/SLES only), `Role`, `AppEnv` (ring fence only) | `inventory/azure_rm.yml` → `os_*`, `distro_*`, `osver_*`, `role_*`, `env_*`, `appenv_*` |
 | **Login users** | `admin_username` per distro: `ubuntu`, `ec2-user` (RHEL), `ec2-user` (SLES); control node `ubuntu`; Windows `zmsadmin` | `group_vars/distro_*.yml` `ansible_user`; Windows user from the secret |
 | **Secret** | One Key Vault per estate, one JSON secret with **10 keys** (the 9 AWS keys plus `zms_app_db_password`); control identity has *Key Vault Secrets User* | `azure.azcollection.azure_keyvault_secret` lookups, one field at a time |
-| **`/etc/ansible/estate.env`** | `AZURE_LOCATION`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID`, `ANSIBLE_AZURE_AUTH_SOURCE=msi`, `ANSIBLE_RESOURCE_GROUP`, `ANSIBLE_KEYVAULT_NAME`, `ANSIBLE_SECRET_NAME`, `ANSIBLE_ESTATE`, `ANSIBLE_ALERT_WEBHOOK_URL`, `CONTROL_REPO_DIR` | `group_vars/all.yml`, `scripts/*.sh`, the inventory plugin |
+| **`/etc/ansible/estate.env`** | `AZURE_LOCATION`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID`, `ANSIBLE_AZURE_AUTH_SOURCE=msi`, `ANSIBLE_RESOURCE_GROUP`, `ANSIBLE_KEYVAULT_NAME`, `ANSIBLE_SECRET_NAME`, `ANSIBLE_ESTATE`, `CONTROL_REPO_DIR` | `group_vars/all.yml`, `scripts/*.sh`, the inventory plugin |
 
 Tag values are case-sensitive and used verbatim: `Role=Middleware` produces `role_Middleware` and matches no playbook.
 
@@ -50,7 +50,7 @@ Everything above the inventory and the secret lookup is the AWS code, with the 2
 | ZMS app password | Fell back silently to the MariaDB root password | Reads the new `zms_app_db_password` key; falls back to root only if it is empty, with a warning |
 | Amazon Linux | `distro_amazon`, three playbooks | Removed, no replacement (decision 1). `amazonlinux-{httpd,mysql,setup}.yml` and `distro_amazon.yml` are gone |
 | ZMS topology | catalog DB on Amazon Linux, inventory service on Amazon Linux | catalog DB on RHEL, inventory service on Ubuntu (see below) |
-| Alerts | SNS topic ARN, never written by cloud-init, so off | JSON POST to `ANSIBLE_ALERT_WEBHOOK_URL`, which Terraform writes |
+| Alerts | SNS topic ARN, never written by cloud-init, so off | None, by design. Results go to `/var/log/ansible/converge-status.log` and `converge-failures.log` only |
 | Control-node Python | `python3-boto3` from cloud-init | `reconverge.sh` installs azure.azcollection's requirements and `python3-winrm` when an import check fails |
 | Domain controllers | Root hints | Also forward to Azure DNS `168.63.129.16` (`ad_dns_forwarders`) |
 | Manual runs | Source `estate.env` by hand | `sudo scripts/estate-shell.sh` |

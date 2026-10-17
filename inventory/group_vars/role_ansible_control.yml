@@ -1,0 +1,15 @@
+---
+# Login user for the Ansible control node (group role_ansible_control, from
+# the Role=ansible-control tag; the inventory plugin turns the hyphen into an
+# underscore).
+#
+# The control node has OS=linux but no Distro tag, so no distro_*.yml sets its
+# ansible_user. Without this file, ssh used whichever account ran Ansible:
+# ubuntu under the systemd timers (fine), but root under sudo, e.g.
+# `sudo scripts/collect-debug.sh`, whose connectivity probe then failed with
+# 'Please login as the user "ubuntu" rather than the user "root"'.
+#
+# Must equal the control node's admin_username in Terraform
+# (modules/ansible-control), which is fixed at ubuntu because the
+# ansible-*.service units run as User=ubuntu.
+ansible_user: ubuntu

@@ -25,5 +25,5 @@ ExecStart=/bin/bash /opt/control-repo/scripts/converge.sh
 # DC promotion + reboots can take a while; allow up to an hour before systemd
 # kills the run.
 TimeoutStartSec=3600
-# Record result to /var/log/ansible and alert on failure.
+# Record the result in /var/log/ansible (converge-status.log, converge-failures.log).
 ExecStopPost=/bin/bash /opt/control-repo/scripts/notify-result.sh estate

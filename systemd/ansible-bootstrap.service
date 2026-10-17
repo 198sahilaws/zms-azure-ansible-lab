@@ -18,5 +18,5 @@ ExecStart=/bin/bash /opt/control-repo/scripts/reconverge.sh
 # The first run on a new node may pip-install azure.azcollection's Python SDK
 # set (several minutes). Give it room rather than relying on the default.
 TimeoutStartSec=1800
-# Record result to /var/log/ansible and alert on failure.
+# Record the result in /var/log/ansible (converge-status.log, converge-failures.log).
 ExecStopPost=/bin/bash /opt/control-repo/scripts/notify-result.sh bootstrap

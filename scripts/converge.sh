@@ -11,7 +11,7 @@
 # This runner executes each playbook as its OWN ansible-playbook invocation, so a
 # failure is contained: it is recorded, and the remaining playbooks still run.
 # The script exits non-zero at the end if anything failed, so systemd still
-# reports the unit as failed and notify-result.sh logs/alerts — but only AFTER
+# reports the unit as failed and notify-result.sh logs it — but only AFTER
 # giving every role a chance to converge.
 #
 # Usage:

@@ -17,10 +17,9 @@ ansible_become_method: sudo
 #
 # The ONE Linux host with no Distro tag is the Ansible control node (Role=
 # ansible-control, OS=linux). It joins os_linux, so site.yml's baseline
-# converges it too, connecting to itself over SSH by private IP. With no
-# ansible_user set, ssh uses the account running the play, which is ubuntu
-# (the systemd units run User=ubuntu, and Terraform's admin_username for the
-# control node is ubuntu). Do not add a fallback ansible_user here.
+# converges it too, connecting to itself over SSH by private IP. Its login
+# user is set in group_vars/role_ansible_control.yml, not here: a fallback in
+# os_linux would collide with the distro groups as described above.
 
 # --- Private subnets / bastion (optional) ---------------------------------
 # If the control node cannot route directly to managed hosts, tunnel SSH
