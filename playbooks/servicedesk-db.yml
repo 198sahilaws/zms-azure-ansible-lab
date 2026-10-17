@@ -45,6 +45,16 @@
       ansible.builtin.meta: end_host
       when: ansible_facts['os_family'] not in ['Debian', 'RedHat', 'Suse']
 
+    # Same rule as servicedesk-web.yml: an estate with NO middleware host is not
+    # running the service desk (deployments/custom's default web + db pair is
+    # one), so leave its database alone. Without this the play created the
+    # sdapp account anyway, with a fallback grant of '10.0.0.%', which in the
+    # custom estate's 10.0.0.0/16 is the PUBLIC (bastion) subnet. An estate
+    # that has the group but no matching host fails below, with the reason.
+    - name: Skip estates that do not run the service desk
+      ansible.builtin.meta: end_host
+      when: (groups[sd_middleware_group] | default([])) | length == 0
+
     - name: Assert a database password is available
       ansible.builtin.assert:
         that:
@@ -56,6 +66,28 @@
           deployments/multi-environment-ring-fencing) and re-apply, then
           converge again.
       no_log: true
+
+    # Not a secret, so outside the no_log below: when it is empty the reason has
+    # to be visible.
+    - name: Resolve the middleware host this database serves
+      ansible.builtin.set_fact:
+        sd_db_middleware_host: >-
+          {{ (groups[sd_middleware_group] | default([]))
+             | intersect(groups[sd_middleware_distro_group] | default([]))
+             | intersect(sd_ring_peers)
+             | first | default('', true) }}
+
+    - name: Fail when no middleware host matches this database host
+      # Previously this fell back to granting '10.0.0.%', a real subnet in the
+      # custom estate (its public tier). No guessed grant: say what is missing.
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} would serve the service desk, but no host is in
+          both '{{ sd_middleware_group }}' and '{{ sd_middleware_distro_group }}'
+          {{ ('within ring ' ~ sd_ring_group) if sd_ring_group | length > 0 else '' }}.
+          Check the Role/Distro (and AppEnv) tags with `ansible-inventory --graph`,
+          or pass -e target=... to limit this play.
+      when: sd_db_middleware_host | length == 0
 
     - name: Resolve the effective application password and client pattern
       ansible.builtin.set_fact:
@@ -81,16 +113,12 @@
         # though it does not keep its address, which is also why this is not
         # a /32.
         #
-        # sd_ring_peers keeps this inside THIS db host's own ring — see the
-        # explanation in vars/servicedesk.yml. Without it a three-ring estate
-        # would derive every ring's grant from whichever middleware host sorted
-        # first, and two of the three grants would be for the wrong subnet.
-        sd_db_client_pattern: >-
-          {{ ((groups[sd_middleware_group] | default([]))
-              | intersect(groups[sd_middleware_distro_group] | default([]))
-              | intersect(sd_ring_peers)
-              | first
-              | default('10.0.0.0', true)).split('.')[0:3] | join('.') }}.%
+        # sd_ring_peers (in sd_db_middleware_host above) keeps this inside THIS
+        # db host's own ring — see the explanation in vars/servicedesk.yml.
+        # Without it a three-ring estate would derive every ring's grant from
+        # whichever middleware host sorted first, and two of the three grants
+        # would be for the wrong subnet.
+        sd_db_client_pattern: "{{ sd_db_middleware_host.split('.')[0:3] | join('.') }}.%"
       no_log: true
 
     - name: Warn when the app account is being given the MySQL root password
@@ -111,8 +139,7 @@
     - name: Show which subnet the grant will admit
       # Deliberately outside the no_log above: the pattern is not a secret and
       # it is the single most useful thing to see when the middleware cannot
-      # connect. An unexpectedly wide pattern here (10.0.0.% from the fallback)
-      # means the middleware host was not in the inventory when this ran.
+      # connect.
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: granting '{{ sd_db_user }}'@'{{ sd_db_client_pattern }}'

@@ -88,13 +88,20 @@ fi
 # Blast-radius controls, overridable from the unit or the environment.
 #
 # Read the two together. max_fail_percentage aborts a play when the failed
-# share of the CURRENT BATCH is strictly greater than the percentage, and
-# serial rounds the batch size UP. With a 25% batch on an estate this size the
-# batch was two or three hosts, so one failure was 33-50% and always exceeded
-# 20: MAX_FAIL_PCT was decorative. At 50% of nine hosts the batch is five and
-# one failure is exactly 20%, which is tolerated. (AWS fix pass 2026-10-15.)
-# The five-host Windows pool in deployments/adds still aborts on a single
-# failure; that is accepted, because the Windows chain is the AD chain.
+# share of the CURRENT BATCH is strictly greater than the percentage, and then
+# stops every remaining host. Ansible's own serial "50%" rounds DOWN (5 hosts
+# -> 2, 2, 1), so on a lab-sized estate one failed host was 50% of its batch
+# and ended the Linux baseline for everyone: tested, every estate of 9 or
+# fewer Linux hosts lost the whole baseline to one failure.
+#
+# site.yml's Linux play therefore no longer uses these two values raw. It
+# loads vars/rolling.yml, which turns them into even batches of at least two
+# hosts and raises the threshold just enough that ONE failure in a batch is
+# always tolerated; two or more still stop the play. Ten or more hosts at 50%
+# get exactly the 20% asked for here.
+# The Windows baseline play still uses the raw values, so the five-host
+# Windows pool in deployments/adds still aborts on a single failure; that is
+# accepted, because the Windows chain is the AD chain.
 ROLLING_BATCH="${ROLLING_BATCH:-50%}"
 MAX_FAIL_PCT="${MAX_FAIL_PCT:-20}"
 

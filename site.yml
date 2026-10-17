@@ -46,8 +46,15 @@
 - name: Linux estate
   hosts: os_linux
   gather_facts: true
-  serial: "{{ rolling_batch | default('100%') }}"
-  max_fail_percentage: "{{ max_fail_pct | default(0) }}"
+  # One failing host must not stop the baseline on the others: see
+  # vars/rolling.yml for why the bare rolling_batch / max_fail_pct values could
+  # not guarantee that on an estate of a few hosts, and what is computed instead.
+  vars:
+    rolling_group: os_linux
+  vars_files:
+    - vars/rolling.yml
+  serial: "{{ rolling_serial | split(',') | map('int') | list }}"
+  max_fail_percentage: "{{ rolling_max_fail | int }}"
   roles:
     - role: baseline
       tags: [baseline]

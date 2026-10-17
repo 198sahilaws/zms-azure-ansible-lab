@@ -31,8 +31,19 @@
         version: "{{ python_version | default(omit, true) }}"
         state: present
 
-    - name: Verify Python is on PATH
-      ansible.windows.win_command: python --version
+    # Verify against the machine PATH as it is NOW, read from the registry.
+    # Chocolatey adds Python to the machine PATH, but a WinRM session does not
+    # re-read its environment from the registry, so on the first converge a
+    # bare `python --version` could fail with "file not found" for a Python
+    # that installed correctly, and pass only on a later run.
+    - name: Verify Python is on the machine PATH
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'   # python missing -> task fails, not a warning
+        $env:Path = @(
+          [Environment]::GetEnvironmentVariable('Path', 'Machine'),
+          [Environment]::GetEnvironmentVariable('Path', 'User')
+        ) -join ';'
+        python --version
       register: py_ver
       changed_when: false
 

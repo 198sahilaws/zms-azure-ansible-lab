@@ -46,42 +46,11 @@
     - sd_db_units.results[0].rc != 0
     - sd_db_units.results[1].rc != 0
 
-# community.mysql needs a Python MySQL client ON THE MANAGED HOST. ubuntu-mysql.yml
-# installs python3-pymysql, but this role must stand alone, so the same
-# best-effort-then-pip pattern the other DB roles use — the package is named
-# differently on every distro and is absent from some repos.
-- name: Check whether the Python MySQL client is importable
-  ansible.builtin.command: python3 -c "import pymysql"
-  register: sd_pymysql
-  changed_when: false
-  failed_when: false
-
-- name: Install a Python MySQL client from the distro repos (best effort)
-  ansible.builtin.package:
-    name: "{{ item }}"
-    state: present
-  loop:
-    - python3-pymysql
-    - python3-PyMySQL
-  failed_when: false
-  when: sd_pymysql.rc != 0
-
-- name: Re-check the Python MySQL client
-  ansible.builtin.command: python3 -c "import pymysql"
-  register: sd_pymysql2
-  changed_when: false
-  failed_when: false
-  when: sd_pymysql.rc != 0
-
-- name: Install PyMySQL from pip as a last resort
-  ansible.builtin.pip:
-    name: PyMySQL
-    state: present
-    extra_args: "--break-system-packages"
-  failed_when: false
-  when:
-    - sd_pymysql.rc != 0
-    - sd_pymysql2.rc | default(1) != 0
+# community.mysql needs PyMySQL in the interpreter Ansible runs modules with,
+# which is not always /usr/bin/python3 (RHEL 8, SLES 15). See roles/pymysql_client.
+- name: Make PyMySQL importable for the community.mysql modules
+  ansible.builtin.include_role:
+    name: pymysql_client
 
 # WHY THE FILE IS CALLED zz- AND NOT 99-.
 #

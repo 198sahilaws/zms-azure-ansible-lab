@@ -1,0 +1,115 @@
+---
+# Make PyMySQL importable by the Python that RUNS ANSIBLE MODULES on this host.
+#
+# community.mysql imports PyMySQL inside the module, so it must be installed
+# for ansible_facts.python.executable, which is not always /usr/bin/python3:
+#
+#   host            Ansible's interpreter       /usr/bin/python3
+#   RHEL 8          python3.11 (osver_8.yml)    3.6
+#   SLES 15         python3.11 (discovered)     3.6
+#   everything else /usr/bin/python3            same
+#
+# The previous check ran `python3 -c "import pymysql"`. On RHEL 8 and SLES 15 it
+# tested 3.6, passed once python3-PyMySQL was installed for 3.6, skipped pip,
+# and every mysql_* task then failed with "A MySQL module is required".
+#
+# Order: distro package for that interpreter, then pip for that interpreter,
+# then a hard failure naming the interpreter. Used by playbooks/rhel-mariadb.yml,
+# playbooks/sles-mariadb.yml and the servicedesk_db and zms_app_db roles.
+# Needs gathered facts.
+
+- name: Identify the interpreter Ansible modules run with
+  ansible.builtin.set_fact:
+    pymysql_python: "{{ ansible_facts['python']['executable'] }}"
+    pymysql_pyver: "{{ ansible_facts['python']['version']['major'] }}.{{ ansible_facts['python']['version']['minor'] }}"
+
+- name: Check whether PyMySQL is importable by {{ pymysql_python }}
+  ansible.builtin.command: "{{ pymysql_python }} -c 'import pymysql'"
+  register: pymysql_import
+  changed_when: false
+  failed_when: false
+
+# One name per call: a name the distro does not ship fails only its own
+# iteration. Unversioned names serve hosts whose interpreter IS the system
+# python3; versioned names serve RHEL 8 (python3.11-PyMySQL) and SLES
+# (python311-PyMySQL).
+- name: Install PyMySQL for that interpreter from the distro repos (best effort)
+  ansible.builtin.package:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ pymysql_distro_packages | unique(case_sensitive=true) }}"
+  vars:
+    pymysql_distro_packages:
+      - "python{{ pymysql_pyver }}-PyMySQL"
+      - "python{{ pymysql_pyver | replace('.', '') }}-PyMySQL"
+      - python3-PyMySQL
+      - python3-pymysql
+  failed_when: false
+  when: pymysql_import.rc != 0
+
+- name: Re-check PyMySQL after the distro packages
+  ansible.builtin.command: "{{ pymysql_python }} -c 'import pymysql'"
+  register: pymysql_import_pkg
+  changed_when: false
+  failed_when: false
+  when: pymysql_import.rc != 0
+
+- name: Fall back to pip for {{ pymysql_python }}
+  when:
+    - pymysql_import.rc != 0
+    - pymysql_import_pkg.rc | default(1) != 0
+  block:
+    # `<interpreter> -m pip` directly, not ansible.builtin.pip: that module
+    # needs the `packaging` library inside the target interpreter (a bare
+    # python3.11 does not have it) and, without pip in that interpreter, falls
+    # back to pip3 on PATH, which installs for the system Python again.
+    - name: Install pip for that interpreter (best effort)
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ pymysql_pip_packages | unique(case_sensitive=true) }}"
+      vars:
+        pymysql_pip_packages:
+          - "python{{ pymysql_pyver }}-pip"
+          - "python{{ pymysql_pyver | replace('.', '') }}-pip"
+          - python3-pip
+      failed_when: false
+
+    - name: Check whether that interpreter has pip
+      ansible.builtin.command: "{{ pymysql_python }} -m pip --version"
+      register: pymysql_has_pip
+      changed_when: false
+      failed_when: false
+
+    - name: Bootstrap pip with ensurepip when no package provided it
+      ansible.builtin.command: "{{ pymysql_python }} -m ensurepip"
+      register: pymysql_ensurepip
+      changed_when: pymysql_ensurepip.rc == 0
+      failed_when: false
+      when: pymysql_has_pip.rc != 0
+
+    - name: Install PyMySQL with that interpreter's pip
+      ansible.builtin.command: "{{ pymysql_python }} -m pip install --disable-pip-version-check PyMySQL"
+      environment:
+        # PEP 668 distros refuse system-wide pip installs without this. An env
+        # var rather than --break-system-packages, which older pip rejects.
+        PIP_BREAK_SYSTEM_PACKAGES: "1"
+      register: pymysql_pip
+      changed_when: "'Successfully installed' in pymysql_pip.stdout"
+      failed_when: false
+
+- name: Confirm PyMySQL is importable by {{ pymysql_python }}
+  ansible.builtin.command: "{{ pymysql_python }} -c 'import pymysql'"
+  register: pymysql_final
+  changed_when: false
+  failed_when: false
+
+- name: Fail with the interpreter named when PyMySQL is still missing
+  ansible.builtin.fail:
+    msg: >-
+      PyMySQL is not importable by {{ pymysql_python }} (Python {{ pymysql_pyver }}),
+      the interpreter Ansible runs the community.mysql modules with on
+      {{ inventory_hostname }}. Neither the distro packages nor pip could install
+      it. pip said: {{ (pymysql_pip.stderr | default('not run', true)) | truncate(300) }}.
+      Install it by hand: {{ pymysql_python }} -m pip install PyMySQL
+  when: pymysql_final.rc != 0

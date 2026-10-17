@@ -37,14 +37,34 @@
     # Override with -e domain_dns_server=<ip> if the DC is outside this inventory.
     domain_dns_server: "{{ (groups['role_dc'] | default([]) | first) | default('', true) }}"
     # Credentials from the consolidated secret, resolved field-scoped and inline.
-    domain_admin_user: >-
+    # Domain-join account. EMPTY domain_join_username (the default) means the
+    # Windows admin account, as <winrm_username>@<domain>, with its own
+    # password: the forest root carried that account into the domain and
+    # windows-adds.yml made it a Domain Admin, so nothing has to be kept in
+    # step. See tasks/domain-join-credentials.yml for the check that runs when
+    # the account is named explicitly.
+    domain_join_user_secret: >-
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).domain_join_username | default('', true) }}
-    domain_admin_password: >-
+    domain_join_password_secret: >-
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).domain_join_password | default('', true) }}
+    domain_admin_account: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).winrm_username | default('', true) }}
+    domain_admin_account_password: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).winrm_password | default('', true) }}
+    domain_admin_user: >-
+      {{ domain_join_user_secret if domain_join_user_secret | length > 0
+         else ((domain_admin_account ~ '@' ~ ad_domain_name) if domain_admin_account | length > 0 else '') }}
+    domain_admin_password: >-
+      {{ domain_join_password_secret if domain_join_user_secret | length > 0
+         else domain_admin_account_password }}
     dsrm_password: >-
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
@@ -61,10 +81,14 @@
           - domain_admin_password | length > 0
           - dsrm_password | length > 0
         fail_msg: >-
-          domain_join_username / domain_join_password / dsrm_password must be set
-          in secrets.auto.tfvars (written to the consolidated secret) before promoting
-          an additional domain controller.
+          dsrm_password must be set in secrets.auto.tfvars before promoting an
+          additional domain controller, and domain-join credentials must resolve:
+          leave both domain_join_* empty to use the Windows admin account, or set
+          both.
       no_log: true
+
+    - name: Check the domain-join credentials against the admin account
+      ansible.builtin.include_tasks: tasks/domain-join-credentials.yml
 
     - name: Fail early if no forest-root domain controller was discovered
       ansible.builtin.assert:

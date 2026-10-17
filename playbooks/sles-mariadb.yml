@@ -21,11 +21,6 @@
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).mysql_root_password | default('', true) }}
     mariadb_server_package: mariadb
-    # Candidate names for the Python MySQL client, tried in order. Absent names
-    # are tolerated; a pip fallback covers the case where none are available.
-    mysql_python_packages:
-      - python3-PyMySQL
-      - python3-pymysql
     # SLES puts the MariaDB socket under /run/mysql. Override if your build differs.
     mariadb_socket: /run/mysql/mysql.sock
   tasks:
@@ -38,37 +33,11 @@
         name: "{{ mariadb_server_package }}"
         state: present
 
-    # The Python MySQL client that community.mysql needs is packaged under
-    # different names across distributions and is not guaranteed to be in the
-    # SLES base product. Try the known names best-effort, verify the module
-    # actually imports, and fall back to pip. (Same defensive pattern as
-    # rhel-mariadb.yml; on AWS a hard dependency on python3-PyMySQL failed the
-    # whole task on Amazon Linux and left MariaDB installed but unstarted.)
-    - name: Install a Python MySQL client from the distro repos (best effort)
-      community.general.zypper:
-        name: "{{ item }}"
-        state: present
-      loop: "{{ mysql_python_packages }}"
-      register: mysql_py_rpm
-      failed_when: false
-
-    - name: Check whether the Python MySQL client is importable
-      ansible.builtin.command: python3 -c "import pymysql"
-      register: mysql_py_import
-      changed_when: false
-      failed_when: false
-
-    - name: Ensure pip is available (only when no distro package provided the client)
-      community.general.zypper:
-        name: python3-pip
-        state: present
-      when: mysql_py_import.rc != 0
-
-    - name: Install PyMySQL from pip (fallback when no distro package exists)
-      ansible.builtin.pip:
-        name: PyMySQL
-        state: present
-      when: mysql_py_import.rc != 0
+    # PyMySQL for the interpreter Ansible actually uses here (python3.11 on
+    # RHEL 8 and SLES 15, not /usr/bin/python3). See roles/pymysql_client.
+    - name: Make PyMySQL importable for the community.mysql modules
+      ansible.builtin.include_role:
+        name: pymysql_client
 
     - name: Ensure mariadb is started and enabled at boot
       ansible.builtin.service:

@@ -9,7 +9,8 @@
 # Join credentials come from the single consolidated secret, resolved
 # field-scoped inline (see group_vars/all.yml), keys domain_join_username /
 # domain_join_password — an account with rights to add computers to the domain.
-# Set them in the deployment's secrets.auto.tfvars.
+# Leave both empty to use the Windows admin account (winrm_username), which the
+# forest root makes a Domain Admin; set both to use another account.
 
 - name: Join Windows hosts to AD domain alcor.co.in
   hosts: "{{ target | default('os_windows') }}"
@@ -30,14 +31,34 @@
     ou_path: ""
     # Domain-join account from the single consolidated secret, resolved
     # field-scoped inline (see group_vars/all.yml note).
-    domain_admin_user: >-
+    # Domain-join account. EMPTY domain_join_username (the default) means the
+    # Windows admin account, as <winrm_username>@<domain>, with its own
+    # password: the forest root carried that account into the domain and
+    # windows-adds.yml made it a Domain Admin, so nothing has to be kept in
+    # step. See tasks/domain-join-credentials.yml for the check that runs when
+    # the account is named explicitly.
+    domain_join_user_secret: >-
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).domain_join_username | default('', true) }}
-    domain_admin_password: >-
+    domain_join_password_secret: >-
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).domain_join_password | default('', true) }}
+    domain_admin_account: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).winrm_username | default('', true) }}
+    domain_admin_account_password: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).winrm_password | default('', true) }}
+    domain_admin_user: >-
+      {{ domain_join_user_secret if domain_join_user_secret | length > 0
+         else ((domain_admin_account ~ '@' ~ ad_domain_name) if domain_admin_account | length > 0 else '') }}
+    domain_admin_password: >-
+      {{ domain_join_password_secret if domain_join_user_secret | length > 0
+         else domain_admin_account_password }}
   tasks:
     - name: Skip hosts that could not be reached (no facts gathered = unreachable)
       ansible.builtin.meta: end_host
@@ -49,9 +70,14 @@
           - domain_admin_user | length > 0
           - domain_admin_password | length > 0
         fail_msg: >-
-          domain_join_username / domain_join_password are empty. Set
-          domain_join_username and domain_join_password in secrets.auto.tfvars.
+          No domain-join credentials. domain_join_username is set but
+          domain_join_password is empty, or the secret has no winrm_username /
+          winrm_password to fall back to. Leave both domain_join_* empty to use
+          the Windows admin account, or set both in secrets.auto.tfvars.
       no_log: true
+
+    - name: Check the domain-join credentials against the admin account
+      ansible.builtin.include_tasks: tasks/domain-join-credentials.yml
 
     # Every flavour of domain controller is PROMOTED by its own playbook
     # (windows-adds / windows-adc / windows-rodc), each of which performs its own

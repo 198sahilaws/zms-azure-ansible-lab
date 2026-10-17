@@ -162,42 +162,11 @@
       or point that service at a different db_distro_group in vars/zms-app.yml.
   when: zms_mariadb_unit.rc != 0
 
-# community.mysql needs a Python MySQL client ON THE MANAGED HOST. The existing
-# *-mariadb playbooks install it, but this role must stand alone — the same
-# best-effort-then-pip pattern they use, for the same reason: the package is
-# named differently on every distro and is absent from some repos.
-- name: Check whether the Python MySQL client is importable
-  ansible.builtin.command: python3 -c "import pymysql"
-  register: zms_pymysql
-  changed_when: false
-  failed_when: false
-
-- name: Install a Python MySQL client from the distro repos (best effort)
-  ansible.builtin.package:
-    name: "{{ item }}"
-    state: present
-  loop:
-    - python3-PyMySQL
-    - python3-pymysql
-  failed_when: false
-  when: zms_pymysql.rc != 0
-
-- name: Re-check the Python MySQL client
-  ansible.builtin.command: python3 -c "import pymysql"
-  register: zms_pymysql2
-  changed_when: false
-  failed_when: false
-  when: zms_pymysql.rc != 0
-
-- name: Install PyMySQL from pip as a last resort
-  ansible.builtin.pip:
-    name: PyMySQL
-    state: present
-    extra_args: "--break-system-packages"
-  failed_when: false
-  when:
-    - zms_pymysql.rc != 0
-    - zms_pymysql2.rc | default(1) != 0
+# community.mysql needs PyMySQL in the interpreter Ansible runs modules with,
+# which is not always /usr/bin/python3 (RHEL 8, SLES 15). See roles/pymysql_client.
+- name: Make PyMySQL importable for the community.mysql modules
+  ansible.builtin.include_role:
+    name: pymysql_client
 
 - name: Install the ZMS MariaDB drop-in configuration
   ansible.builtin.template:
