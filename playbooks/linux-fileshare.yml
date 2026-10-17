@@ -20,7 +20,7 @@
     # Debian/Ubuntu.
     smb_service: "{{ 'smb' if ansible_facts['os_family'] in ['RedHat', 'Suse'] else 'smbd' }}"
     samba_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).samba_password | default('', true) }}
   tasks:

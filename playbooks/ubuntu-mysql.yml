@@ -20,7 +20,7 @@
     # inline (see group_vars/all.yml note). Empty (default) skips the root-password
     # step; set mysql_root_password in secrets.auto.tfvars to enable it.
     mysql_root_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).mysql_root_password | default('', true) }}
   tasks:

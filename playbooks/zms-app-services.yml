@@ -37,11 +37,11 @@
     - ../vars/zms-app.yml
   vars:
     zms_mysql_root_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).mysql_root_password | default('', true) }}
     zms_app_db_password_from_secret: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).zms_app_db_password | default('', true) }}
     # MUST match the fallback order in zms-app-db.yml exactly — that play creates

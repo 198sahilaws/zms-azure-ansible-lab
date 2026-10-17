@@ -25,7 +25,7 @@
     # the whole document would put the SSH private key and every other password
     # in scope for this play, where one -vvv leaks all of them.
     sd_mysql_root_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).mysql_root_password | default('', true) }}
     # The dedicated app password. modules/secrets writes this key from
@@ -37,7 +37,7 @@
     # servicedesk.* only), but it can authenticate AS root, which is the part
     # worth being noisy about.
     sd_db_password_from_secret: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).servicedesk_db_password | default('', true) }}
   pre_tasks:

@@ -3,9 +3,10 @@ Description=Ansible estate converge (scripts/converge.sh)
 Wants=network-online.target
 # No After=ansible-bootstrap.service. After= only orders units inside ONE
 # transaction; two independently timed units are two transactions, so it was
-# inert on AWS and was removed in the 2026-10-15 fix pass. The real ordering is
-# the timers: estate starts 8 minutes after bootstrap at boot, and bootstrap
-# runs twice per estate interval.
+# inert on AWS and was removed in the 2026-10-15 fix pass. Ordering is enforced
+# by the scripts instead: both take /opt/control-repo/.git/zms-ansible.lock;
+# converge.sh waits for the bootstrap's SSH key and then for the lock, and
+# reconverge.sh skips its tick while a converge holds the lock.
 After=network-online.target
 
 [Service]

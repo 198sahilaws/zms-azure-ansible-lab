@@ -27,11 +27,11 @@
     sd_tier: middleware
     # Field-scoped inline lookups — see the note in servicedesk-db.yml.
     sd_mysql_root_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).mysql_root_password | default('', true) }}
     sd_db_password_from_secret: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).servicedesk_db_password | default('', true) }}
   pre_tasks:

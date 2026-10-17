@@ -33,7 +33,9 @@
 #   cd /opt/control-repo && ansible-galaxy collection list <name>
 # and check which directory heading the version is printed under.
 collections:
-  # azure_rm inventory + azure_keyvault_secret lookup. Replaces amazon.aws.
+  # azure_rm inventory. Replaces amazon.aws. Secrets are read by the repo's own
+  # lookup_plugins/zms_keyvault_secret.py, which falls back to this collection's
+  # azure_keyvault_secret only off Azure (workstation, az login).
   #
   # Unlike amazon.aws it needs a large Python SDK set (its requirements.txt) in
   # the interpreter that runs ansible-playbook. The PPA bundle usually already

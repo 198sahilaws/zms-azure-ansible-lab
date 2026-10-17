@@ -38,15 +38,15 @@
     domain_dns_server: "{{ (groups['role_dc'] | default([]) | first) | default('', true) }}"
     # Credentials from the consolidated secret, resolved field-scoped and inline.
     domain_admin_user: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).domain_join_username | default('', true) }}
     domain_admin_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).domain_join_password | default('', true) }}
     dsrm_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).dsrm_password | default('', true) }}
   tasks:

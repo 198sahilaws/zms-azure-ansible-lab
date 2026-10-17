@@ -28,6 +28,26 @@ if [ -n "${ANSIBLE_RESOURCE_GROUP:-}" ] && [ -z "${ANSIBLE_AZURE_VM_RESOURCE_GRO
 fi
 
 REPO_DIR="${CONTROL_REPO_DIR:-/opt/control-repo}"
+SELF="$(readlink -f "$0")"
+
+# One Ansible run at a time on this node: everything below rewrites the repo
+# and its collections, which an estate converge in progress is reading. If
+# converge.sh holds the lock, skip this tick rather than wait (a converge can
+# run for an hour; the key and collections are already in place from the last
+# refresh, and the timer comes back in half a converge interval). converge.sh
+# never takes the lock before the SSH key exists, so a first boot is not
+# blocked. See the lock notes in scripts/converge.sh.
+LOCK_FILE="${ANSIBLE_LOCK_FILE:-$REPO_DIR/.git/zms-ansible.lock}"
+if [ -z "${ZMS_ANSIBLE_LOCKED:-}" ]; then
+  export ZMS_ANSIBLE_LOCKED=1
+  rc=0
+  flock -o -n -E 75 "$LOCK_FILE" /bin/bash "$SELF" "$@" || rc=$?
+  if [ "$rc" -eq 75 ]; then
+    echo "An estate converge holds $LOCK_FILE; skipping this repo refresh. The next ansible-bootstrap.timer tick runs it."
+    exit 0
+  fi
+  exit "$rc"
+fi
 
 cd "${REPO_DIR}"
 

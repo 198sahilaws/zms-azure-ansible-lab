@@ -5,10 +5,10 @@
 # material current.
 #
 # reconverge.sh has already installed azure.azcollection's Python SDK set and
-# pywinrm before this runs. The Key Vault lookup below does not need the SDK at
-# all (with a managed identity it only uses `requests`), so writing the key
-# works even on a node whose SDK install failed; the inventory check at the end
-# is what exposes that.
+# pywinrm before this runs. The Key Vault lookup below (the repo's own
+# lookup_plugins/zms_keyvault_secret.py) uses only the Python standard library,
+# so writing the key works even on a node whose SDK install failed; the
+# inventory check at the end is what exposes that.
 
 - name: Bootstrap the Ansible control node
   hosts: localhost
@@ -65,7 +65,7 @@
     - name: Write the Ansible SSH private key from the consolidated secret
       ansible.builtin.copy:
         content: >-
-          {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          {{ (lookup('zms_keyvault_secret', ansible_secret_name,
               vault_url=azure_keyvault_url, client_id=azure_client_id)
               | from_json).ssh_private_key | default('', true) }}
         dest: "{{ ansible_ssh_private_key_file }}"

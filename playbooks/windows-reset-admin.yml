@@ -41,11 +41,11 @@
   vars:
     # Target account + password to ENFORCE, read field-scoped from the secret.
     admin_user: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).winrm_username | default('', true) }}
     admin_pass: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).winrm_password | default('', true) }}
   tasks:

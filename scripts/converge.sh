@@ -37,7 +37,53 @@ if [ -n "${ANSIBLE_RESOURCE_GROUP:-}" ] && [ -z "${ANSIBLE_AZURE_VM_RESOURCE_GRO
 fi
 
 REPO_DIR="${CONTROL_REPO_DIR:-/opt/control-repo}"
+SELF="$(readlink -f "$0")"
 cd "$REPO_DIR" || { echo "FATAL: cannot cd to $REPO_DIR"; exit 1; }
+
+# --- One Ansible run at a time on this node ----------------------------------
+# ansible-bootstrap (reconverge.sh, every 30 min) runs `git reset --hard` and
+# `ansible-galaxy collection install --upgrade` in this repo. Without a lock it
+# could do that halfway through this converge (which can run for an hour), so
+# later playbooks would come from a newer commit and modules would load from a
+# collection tree that was being rewritten. Both scripts take this lock;
+# reconverge.sh skips its tick when we hold it, and we wait for it.
+#
+# The lock file sits in .git, which git never touches and the service user
+# owns: in a world-writable directory such as /run/lock, Ubuntu's
+# fs.protected_regular stops root opening a lock file ubuntu created.
+#
+# flock -o: the lock is held by the flock process, NOT inherited by the script.
+# Otherwise the ssh ControlPersist masters ansible leaves behind for 60 s would
+# keep holding it after the converge ends.
+LOCK_FILE="${ANSIBLE_LOCK_FILE:-$REPO_DIR/.git/zms-ansible.lock}"
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-900}"
+SSH_KEY_FILE="${ANSIBLE_SSH_KEY_FILE:-/etc/ansible/keys/ansible_rsa}"
+KEY_WAIT_SECONDS="${KEY_WAIT_SECONDS:-900}"
+if [ -z "${ZMS_ANSIBLE_LOCKED:-}" ]; then
+  # First boot: cloud-init enables both timers together, often after this
+  # timer's 10-minute boot offset has passed, so this can start alongside the
+  # first bootstrap. Wait for bootstrap.yml to write the SSH key, WITHOUT the
+  # lock (bootstrap needs it to write the key), instead of converging an estate
+  # we cannot log in to and then idling for an hour.
+  waited=0
+  while [ ! -s "$SSH_KEY_FILE" ] && [ "$waited" -lt "$KEY_WAIT_SECONDS" ]; do
+    [ "$waited" -eq 0 ] && echo "Waiting up to ${KEY_WAIT_SECONDS}s for ansible-bootstrap to write $SSH_KEY_FILE"
+    sleep 15
+    waited=$((waited + 15))
+  done
+  if [ ! -s "$SSH_KEY_FILE" ]; then
+    echo "FATAL: $SSH_KEY_FILE is missing or empty after ${KEY_WAIT_SECONDS}s. bootstrap.yml writes it from Key Vault: journalctl -u ansible-bootstrap.service"
+    exit 1
+  fi
+  export ZMS_ANSIBLE_LOCKED=1
+  rc=0
+  flock -o -w "$LOCK_WAIT_SECONDS" -E 75 "$LOCK_FILE" /bin/bash "$SELF" "$@" || rc=$?
+  if [ "$rc" -eq 75 ]; then
+    echo "FATAL: another Ansible run held $LOCK_FILE for ${LOCK_WAIT_SECONDS}s; not converging. The next timer tick retries."
+    exit 1
+  fi
+  exit "$rc"
+fi
 
 # Blast-radius controls, overridable from the unit or the environment.
 #

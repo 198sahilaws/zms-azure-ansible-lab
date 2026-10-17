@@ -29,7 +29,7 @@
     # Field-scoped inline, per the note in inventory/group_vars/all.yml: never
     # bind the whole credentials document to a variable.
     zms_mysql_root_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).mysql_root_password | default('', true) }}
     # The application account's own password: the tenth key in the
@@ -43,7 +43,7 @@
     # Precedence, which zms-app-services.yml must match exactly:
     #   -e zms_app_db_password_override  >  zms_app_db_password key  >  root
     zms_app_db_password_from_secret: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).zms_app_db_password | default('', true) }}
     zms_app_db_password: >-

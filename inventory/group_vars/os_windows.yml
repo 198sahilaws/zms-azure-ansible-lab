@@ -28,11 +28,11 @@ ansible_become: false
 # ignore_unreachable) instead of the whole play aborting on an undefined field.
 # On AWS these two were the only keys without it.
 ansible_user: >-
-  {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+  {{ (lookup('zms_keyvault_secret', ansible_secret_name,
       vault_url=azure_keyvault_url, client_id=azure_client_id)
       | from_json).winrm_username | default('', true) }}
 ansible_password: >-
-  {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+  {{ (lookup('zms_keyvault_secret', ansible_secret_name,
       vault_url=azure_keyvault_url, client_id=azure_client_id)
       | from_json).winrm_password | default('', true) }}
 

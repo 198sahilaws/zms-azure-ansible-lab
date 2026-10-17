@@ -50,13 +50,17 @@ ansible_secret_name: "{{ lookup('ansible.builtin.env', 'ANSIBLE_SECRET_NAME') | 
 # and every password in scope for every play (and one stray `debug: var=...` or
 # `-vvv` dump would leak all of them). Instead each play resolves ONLY the field
 # it needs, inline and at the point of use:
-#   "{{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+#   "{{ (lookup('zms_keyvault_secret', ansible_secret_name,
 #        vault_url=azure_keyvault_url, client_id=azure_client_id)
 #        | from_json).winrm_password | default('', true) }}"
 # See group_vars/os_windows.yml and the playbooks/*.yml vars blocks.
 #
-# Every field reference is a separate lookup: one IMDS token request plus one
-# Key Vault GET. That is the price of the convention, and it is well inside
-# Key Vault's throttling limits for an estate of this size. Authorisation is the
-# control identity's "Key Vault Secrets User" role on the vault; there is no
-# credential anywhere in this repo.
+# The lookup is lookup_plugins/zms_keyvault_secret.py, not the collection's
+# azure_keyvault_secret. Every field reference is still a separate Key Vault
+# GET, but the managed-identity TOKEN is fetched once and shared by every
+# worker process (cached on tmpfs, refreshed before expiry), and both calls are
+# retried on HTTP 429. The collection lookup fetched a new token per call, and
+# Azure caps the identity endpoint at 5 concurrent requests per VM: os_windows
+# connection variables alone exceeded that on a five-host Windows estate.
+# Authorisation is the control identity's "Key Vault Secrets User" role on the
+# vault; there is no credential anywhere in this repo.

@@ -20,7 +20,7 @@
     # DSRM / safe-mode password from the single consolidated secret, key
     # dsrm_password. Resolved field-scoped inline (see group_vars/all.yml note).
     dsrm_password: >-
-      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).dsrm_password | default('', true) }}
   tasks:

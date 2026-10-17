@@ -16,7 +16,7 @@ Neither repo references the other by resource ID. They meet at three contracts, 
 | --- | --- | --- |
 | **Tags → groups** | VM tags `ManagedBy=Terraform`, `Environment`, `OS`, `Distro`, `OSVersion` (RHEL/SLES only), `Role`, `AppEnv` (ring fence only) | `inventory/azure_rm.yml` → `os_*`, `distro_*`, `osver_*`, `role_*`, `env_*`, `appenv_*` |
 | **Login users** | `admin_username` per distro: `ubuntu`, `ec2-user` (RHEL), `ec2-user` (SLES); control node `ubuntu`; Windows `zmsadmin` | `group_vars/distro_*.yml` `ansible_user`; Windows user from the secret |
-| **Secret** | One Key Vault per estate, one JSON secret with **10 keys** (the 9 AWS keys plus `zms_app_db_password`); control identity has *Key Vault Secrets User* | `azure.azcollection.azure_keyvault_secret` lookups, one field at a time |
+| **Secret** | One Key Vault per estate, one JSON secret with **10 keys** (the 9 AWS keys plus `zms_app_db_password`); control identity has *Key Vault Secrets User* | `zms_keyvault_secret` lookups (repo `lookup_plugins/`), one field at a time, one shared managed-identity token |
 | **`/etc/ansible/estate.env`** | `AZURE_LOCATION`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID`, `ANSIBLE_AZURE_AUTH_SOURCE=msi`, `ANSIBLE_RESOURCE_GROUP`, `ANSIBLE_KEYVAULT_NAME`, `ANSIBLE_SECRET_NAME`, `ANSIBLE_ESTATE`, `CONTROL_REPO_DIR` | `group_vars/all.yml`, `scripts/*.sh`, the inventory plugin |
 
 Tag values are case-sensitive and used verbatim: `Role=Middleware` produces `role_Middleware` and matches no playbook.
@@ -45,7 +45,7 @@ Everything above the inventory and the secret lookup is the AWS code, with the 2
 | Area | AWS | Azure |
 | --- | --- | --- |
 | Inventory | `amazon.aws.aws_ec2`, filtered by `tag:ManagedBy` and `tag:Environment` | `azure.azcollection.azure_rm`, scoped to the estate's **resource group**, plus the same two tag filters. Hostname is still the primary private IP |
-| Secret lookup | `amazon.aws.aws_secret` | `azure.azcollection.azure_keyvault_secret` with the control node's managed identity. Still one field per lookup; no global credentials variable |
+| Secret lookup | `amazon.aws.aws_secret` | `zms_keyvault_secret` (repo `lookup_plugins/`) with the control node's managed identity: one token shared by all workers and retries on HTTP 429, because the collection's `azure_keyvault_secret` requested a token per call and hit Azure's 5-concurrent limit. Still one field per lookup; no global credentials variable |
 | Windows secret keys | No `default('', true)` (hard failure on an empty secret) | Same default as every other key |
 | ZMS app password | Fell back silently to the MariaDB root password | Reads the new `zms_app_db_password` key; falls back to root only if it is empty, with a warning |
 | Amazon Linux | `distro_amazon`, three playbooks | Removed, no replacement (decision 1). `amazonlinux-{httpd,mysql,setup}.yml` and `distro_amazon.yml` are gone |
