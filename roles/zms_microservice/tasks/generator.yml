@@ -1,0 +1,29 @@
+---
+# A systemd timer that POSTs one order a minute through the front door, so the
+# dashboard counters move on their own during a demo. Runs only on the orders
+# host, and only when zms_app_generator_enabled is true.
+
+- name: Install the generator unit
+  ansible.builtin.template:
+    src: zms-order-generator.service.j2
+    dest: /etc/systemd/system/zms-order-generator.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: zms_gen_unit
+
+- name: Install the generator timer
+  ansible.builtin.template:
+    src: zms-order-generator.timer.j2
+    dest: /etc/systemd/system/zms-order-generator.timer
+    owner: root
+    group: root
+    mode: "0644"
+  register: zms_gen_timer
+
+- name: Enable the generator timer
+  ansible.builtin.systemd:
+    name: zms-order-generator.timer
+    state: "{{ 'restarted' if (zms_gen_unit is changed or zms_gen_timer is changed) else 'started' }}"
+    enabled: true
+    daemon_reload: true

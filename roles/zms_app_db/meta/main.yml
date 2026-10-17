@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: zms_app_db
+  author: ZMS lab
+  description: >-
+    Prepare a MariaDB host to serve one or more ZMS lab microservice schemas:
+    listen on the VNet address, create the schema, create the application
+    account with a scoped grant, and open the host firewall.
+  license: MIT
+  min_ansible_version: "2.14"
+  galaxy_tags: [mariadb, mysql, database, lab]
+dependencies: []

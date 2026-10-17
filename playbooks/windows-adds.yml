@@ -1,0 +1,132 @@
+---
+# Promote a Windows Server to the FIRST domain controller of a NEW forest.
+# Root domain: alcor.co.in
+#
+#   ansible-playbook playbooks/windows-adds.yml
+#   ansible-playbook playbooks/windows-adds.yml --limit win-dc01
+#   ansible-playbook playbooks/windows-adds.yml -e target=role_dc
+#
+# The DSRM (Directory Services Restore Mode / "safe mode") password is fetched
+# from the estate's Azure Key Vault at run time — never stored in Git. The module marks
+# safe_mode_password as no_log automatically.
+
+- name: Build new AD forest (alcor.co.in)
+  hosts: "{{ target | default('role_dc') }}"
+  ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
+  gather_facts: true
+  vars:
+    ad_domain_name: alcor.co.in
+    ad_domain_netbios: ALCOR
+    # DSRM / safe-mode password from the single consolidated secret, key
+    # dsrm_password. Resolved field-scoped inline (see group_vars/all.yml note).
+    dsrm_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).dsrm_password | default('', true) }}
+  tasks:
+    - name: Skip hosts that could not be reached (no facts gathered = unreachable)
+      ansible.builtin.meta: end_host
+      when: ansible_facts | length == 0
+
+    - name: Assert the DSRM password is present in the consolidated secret
+      ansible.builtin.assert:
+        that:
+          - dsrm_password | length > 0
+        fail_msg: >-
+          dsrm_password is empty. Set dsrm_password in secrets.auto.tfvars so it
+          is written to the consolidated secret before promoting the forest.
+      no_log: true
+
+    - name: Install AD DS role and management tools
+      ansible.windows.win_feature:
+        name: AD-Domain-Services
+        include_management_tools: true
+        state: present
+      register: ad_feature
+
+    - name: Reboot if the feature install requires it
+      ansible.windows.win_reboot:
+      when: ad_feature.reboot_required
+
+    - name: Promote host to first DC of new forest {{ ad_domain_name }}
+      microsoft.ad.domain:
+        dns_domain_name: "{{ ad_domain_name }}"
+        domain_netbios_name: "{{ ad_domain_netbios }}"
+        safe_mode_password: "{{ dsrm_password }}"
+        install_dns: true
+        reboot: true          # module manages the post-promotion reboot
+      register: forest
+
+    - name: Wait for AD Web Services to come up (DC is ready)
+      ansible.windows.win_service:
+        name: ADWS
+        state: started
+        start_mode: auto
+      register: adws
+      until: adws is succeeded
+      retries: 30
+      delay: 20
+
+    - name: Forward non-AD DNS queries to Azure DNS
+      ansible.builtin.include_tasks: tasks/azure-dns-forwarder.yml
+
+    # WHY THIS EXISTS
+    # Promoting the FIRST DC of a new forest migrates the server's local SAM
+    # accounts into the new directory, so local 'zsroot' becomes ALCOR\zsroot.
+    # But membership of the LOCAL Administrators group does NOT carry over into
+    # Domain Admins - the migrated account lands as an ordinary domain user that
+    # happens to sit in BUILTIN\Administrators on this DC.
+    #
+    # That is enough for most things, which is why this went unnoticed:
+    #   - WinRM management of the DC          -> works (BUILTIN\Administrators)
+    #   - joining a member server to the domain -> works (any authenticated user
+    #     may join up to ms-DS-MachineAccountQuota = 10 computers)
+    #   - promoting a READ-ONLY DC            -> FAILS, because
+    #     Install-ADDSDomainController explicitly verifies Domain Admins or
+    #     Enterprise Admins membership and refuses otherwise:
+    #       "Verification of user credential permissions failed. You have not
+    #        supplied user credentials that belong to the Domain Admins group
+    #        or the Enterprise Admins group."
+    #
+    # So windows-rodc.yml can never succeed unless this runs first. It is placed
+    # here (not in windows-rodc.yml) because it must happen on the forest root
+    # DC, and because orchestrate.yml runs windows-adds.yml before windows-rodc.yml.
+    #
+    # This works without any additional credentials because BUILTIN\Administrators
+    # on a DC may modify group membership - the account elevates itself once.
+    # Idempotent: re-running is a no-op when the account is already a member.
+    - name: Ensure the Ansible account is a Domain Admin (required to promote RODCs)
+      microsoft.ad.group:
+        name: Domain Admins
+        scope: global
+        state: present
+        members:
+          add:
+            - "{{ ansible_user | regex_replace('^.*[\\\\]', '') }}"
+      register: da_member
+      until: da_member is succeeded
+      retries: 5
+      delay: 15
+
+    # Enterprise Admins exists only in the FOREST ROOT domain, which is what this
+    # play creates. Needed for forest-wide operations such as adprep/rodcprep,
+    # which RODC promotion triggers on first use.
+    - name: Ensure the Ansible account is an Enterprise Admin (forest-wide operations)
+      microsoft.ad.group:
+        name: Enterprise Admins
+        scope: universal
+        state: present
+        members:
+          add:
+            - "{{ ansible_user | regex_replace('^.*[\\\\]', '') }}"
+      register: ea_member
+      until: ea_member is succeeded
+      retries: 5
+      delay: 15
+
+    # Group membership is only re-evaluated when a new token is issued, so the
+    # elevation above does not affect the CURRENT WinRM session. Dropping the
+    # connection forces the next task (and windows-rodc.yml) to authenticate
+    # afresh and pick up the new privileges.
+    - name: Reset the connection so the new group membership takes effect
+      ansible.builtin.meta: reset_connection

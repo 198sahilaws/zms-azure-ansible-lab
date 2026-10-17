@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: servicedesk_app
+  description: Deploy the ZMS lab service desk Flask application behind gunicorn.
+  author: ZMS Azure Lab
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

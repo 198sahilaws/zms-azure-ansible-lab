@@ -1,0 +1,19 @@
+---
+# Defaults for the baseline role. Override per group/host as needed.
+baseline_timezone: Asia/Kolkata          # Indian Standard Time (IST, UTC+5:30)
+baseline_windows_timezone: India Standard Time
+
+baseline_manage_timesync: true
+# chrony's service unit is named 'chronyd' on the RedHat family (RHEL, Rocky)
+# AND on SUSE/SLES, but 'chrony' on Debian/Ubuntu. Derive it from the OS family
+# so the baseline role works on a mixed Linux estate (override per host/group
+# if needed).
+baseline_chrony_service: "{{ 'chronyd' if (ansible_facts['os_family'] | default('')) in ['RedHat', 'Suse'] else 'chrony' }}"
+
+baseline_linux_packages:
+  - htop
+  - curl
+  - vim
+
+baseline_windows_packages:
+  - 7zip

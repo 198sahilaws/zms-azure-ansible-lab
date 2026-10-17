@@ -1,0 +1,101 @@
+---
+# Full estate convergence, in dependency order. This is what the ansible-estate
+# systemd timer runs (not site.yml, which is baseline only).
+#
+#   ansible-playbook orchestrate.yml
+#   ansible-playbook orchestrate.yml -e rolling_batch=25% -e max_fail_pct=20
+#
+# DESIGN RULES (keep these when adding playbooks):
+#
+#  1. CONVERGENCE ONLY. Every playbook here must be fast, idempotent, and safe to
+#     run unattended every hour. Full OS upgrades and reboots are NOT convergence
+#     — playbooks/ubuntu-setup.yml does `apt upgrade dist` plus a conditional
+#     reboot, so it is deliberately EXCLUDED and run manually in a maintenance
+#     window:
+#         ansible-playbook playbooks/ubuntu-setup.yml
+#     (amazonlinux-setup.yml went with Amazon Linux; RHEL and SLES have no
+#     setup playbook, as on AWS.)
+#     (Previously they ran here, ahead of the service playbooks; they are slow and
+#     reboot hosts, so a failure or timeout meant web/db never got installed.)
+#
+#  2. LINUX BEFORE WINDOWS. The Linux chain is independent of AD, so a Windows or
+#     WinRM problem must not prevent Linux services from converging.
+#
+#  3. EVERY PLAY TARGETS A ROLE ∩ OS/DISTRO INTERSECTION. Role groups (role_web,
+#     role_db, role_fileshare, role_client) span BOTH operating systems, so a bare
+#     role group would send Apache to Windows or IIS to Linux. Each playbook
+#     defaults to e.g. 'role_web:&distro_ubuntu' / 'role_web:&os_windows'.
+#
+#  4. Playbooks whose target group is empty are harmless no-ops
+#     ("skipping: no hosts matched").
+
+# --- 0. Interpreter bootstrap (must precede everything) ----------------------
+# RHEL 8 ships Python 3.6, which ansible-core 2.21 cannot use on a managed node.
+# This uses `raw` to install python3.11 before any Python-dependent task — even
+# fact gathering — is attempted. No-op on a converged host and on estates with
+# no RHEL 8 ("skipping: no hosts matched").
+- import_playbook: playbooks/rhel8-python-bootstrap.yml
+
+# --- 1. Baseline on every reachable host ------------------------------------
+- import_playbook: site.yml
+
+# --- 2. Linux role services (independent of Windows/AD) ----------------------
+- import_playbook: playbooks/ubuntu-apache2.yml      # role_web  & distro_ubuntu
+- import_playbook: playbooks/sles-apache2.yml        # role_web  & distro_sles
+- import_playbook: playbooks/rhel-httpd.yml          # role_web  & distro_rhel
+- import_playbook: playbooks/ubuntu-mysql.yml        # role_db   & distro_ubuntu
+- import_playbook: playbooks/sles-mariadb.yml        # role_db   & distro_sles
+- import_playbook: playbooks/rhel-mariadb.yml        # role_db   & distro_rhel
+- import_playbook: playbooks/linux-fileshare.yml     # role_fileshare & os_linux
+- import_playbook: playbooks/linux-client.yml        # role_client    & os_linux
+
+# --- 2b. ZMS microservices demo application ---------------------------------
+# Runs AFTER the MariaDB playbooks above, because zms-app-db.yml expects
+# mariadb.service to already exist on the hosts it prepares.
+#
+# Order matters and is enforced by content, not just by position: the services
+# playbook fails its health gate with a readable message if the databases were
+# not prepared first, rather than leaving a green run and a broken page.
+#
+# All three are idempotent and quick on a converged estate (the seeder no-ops
+# once rows exist, pip no-ops once the venv is built), so they are safe to run
+# unattended.
+#
+# IMPORTANT -- LISTING THEM HERE IS NOT ENOUGH TO SCHEDULE THEM. The hourly
+# ansible-estate timer does NOT run this file: it runs scripts/converge.sh,
+# which iterates its own LINUX_PLAYS / WINDOWS_PLAYS arrays so that one failing
+# playbook cannot abort the rest. A playbook added here but not to that array
+# runs only when someone invokes orchestrate.yml by hand. These three are in
+# both. Keep the two lists in step.
+#
+# To stop deploying the demo app on a schedule, remove the three entries from
+# scripts/converge.sh (removing them here only affects manual runs); nothing
+# else depends on them.
+- import_playbook: playbooks/zms-app-db.yml          # role_db  (RHEL + SLES MariaDB hosts)
+- import_playbook: playbooks/zms-app-services.yml    # role_web (catalog+inventory on Ubuntu, orders on RHEL)
+- import_playbook: playbooks/zms-app-frontend.yml
+
+# --- 2c. Service desk (Flask + MySQL, deployments/web-app) -------------------
+# db -> middleware -> web -> client. No-ops with "no hosts matched" on an estate
+# without an Ubuntu role_web/role_middleware/role_db/role_client quartet.
+#
+# NOT playbooks/servicedesk-app.yml — it is a compatibility alias that imports
+# the two plays below, and importing it here as well would run them twice.
+#
+# These four must stay in step with the LINUX_PLAYS array in
+# scripts/converge.sh, which is what the ansible-estate timer actually runs.
+# Adding a play here alone means it never runs on a schedule.
+- import_playbook: playbooks/servicedesk-db.yml         # role_db         & distro_ubuntu
+- import_playbook: playbooks/servicedesk-middleware.yml # role_middleware & distro_ubuntu
+- import_playbook: playbooks/servicedesk-web.yml        # role_web        & distro_ubuntu
+- import_playbook: playbooks/servicedesk-client.yml     # role_client     & distro_ubuntu
+
+# --- 3. Windows AD chain (forest -> members -> RODC -> services) -------------
+- import_playbook: playbooks/windows-adds.yml        # role_dc
+- import_playbook: playbooks/windows-adc.yml         # role_adc
+- import_playbook: playbooks/windows-domain-join.yml # os_windows (skips DC/ADC/RODC)
+- import_playbook: playbooks/windows-rodc.yml        # role_rodc
+- import_playbook: playbooks/windows-iis.yml         # role_web       & os_windows
+- import_playbook: playbooks/windows-share.yml       # role_fileshare & os_windows
+- import_playbook: playbooks/windows-python.yml      # os_windows
+- import_playbook: playbooks/windows-client.yml      # role_client    & os_windows

@@ -1,0 +1,26 @@
+---
+zms_app_db_user: zmsapp
+zms_app_db_port: 3306
+
+# Empty = derive the client pattern(s) from the app hosts actually mapped to
+# this database host (see tasks/main.yml). A non-empty value is a manual
+# override and is used verbatim for every schema. See vars/zms-app.yml.
+zms_app_db_client_pattern: ""
+
+# Ring scoping. Overridden by vars/zms-app.yml when a playbook loads it; these
+# defaults keep the role usable standalone and make the intersect a no-op.
+zms_app_web_group: role_web
+zms_ring_group: ""
+zms_ring_peers: "{{ groups['all'] | default([]) }}"
+
+# Where the drop-in config goes, per family. A drop-in rather than an edit of
+# the distro's own file: editing my.cnf in place means every distro needs a
+# different lineinfile and a package upgrade can clobber it.
+zms_app_db_confdir_redhat: /etc/my.cnf.d
+zms_app_db_confdir_suse: /etc/my.cnf.d
+zms_app_db_confdir_debian: /etc/mysql/mariadb.conf.d
+
+# MariaDB's unix socket differs by family (SLES puts it under /run).
+zms_app_db_socket_redhat: /var/lib/mysql/mysql.sock
+zms_app_db_socket_suse: /run/mysql/mysql.sock
+zms_app_db_socket_debian: /var/run/mysqld/mysqld.sock

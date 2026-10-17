@@ -1,0 +1,36 @@
+---
+# Minimal, idempotent Windows baseline.
+# Prefer signed installers / signed Chocolatey packages over large custom
+# PowerShell on hardened hosts (WDAC / AppLocker / Constrained Language Mode).
+# WinRM prerequisite. Windows applies UAC *remote token filtering* to local
+# accounts: a local administrator that is not the built-in "Administrator" gets a
+# FILTERED token over the network, with the Administrators SID reduced to
+# deny-only. WinRM's default RootSDDL requires BUILTIN\Administrators, so the
+# check fails and WinRM returns 401 — surfaced by Ansible as
+#   "ntlm: the specified credentials were rejected by the server"
+# even though the very same account/password works fine over RDP (an INTERACTIVE
+# logon, which gets the full unfiltered token).
+#
+# Terraform's winrm-bootstrap.ps1 (Azure Run Command) sets this when the VM is
+# built; this task re-asserts it on every converge so it can't silently drift.
+# NOTE: this can only MAINTAIN the value, not bootstrap it — WinRM must already
+# work for Ansible to reach the host at all. For a host that has lost it, re-run
+# the bootstrap out-of-band (`az vm run-command invoke ... RunPowerShellScript`,
+# or taint the Terraform run command resource), RDP in, or rebuild the VM.
+- name: Allow local administrators full tokens over the network (WinRM prerequisite)
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+    name: LocalAccountTokenFilterPolicy
+    data: 1
+    type: dword
+    state: present
+
+- name: Set the timezone
+  ansible.windows.win_timezone:
+    timezone: "{{ baseline_windows_timezone }}"
+
+- name: Ensure baseline Chocolatey packages are present
+  chocolatey.chocolatey.win_chocolatey:
+    name: "{{ baseline_windows_packages }}"
+    state: present
+  when: baseline_windows_packages | length > 0

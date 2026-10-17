@@ -1,0 +1,42 @@
+---
+# Defaults for servicedesk_db. Real values come from vars/servicedesk.yml, which
+# the playbook loads with vars_files; these are last-resort fallbacks so the role
+# is runnable on its own and `--check` gives a readable error, not a stack trace.
+
+sd_db_name: servicedesk
+sd_db_port: 3306
+sd_db_user: sdapp
+
+# Credentials are passed in by the playbook from the consolidated Secrets
+# Manager document. Empty here so a --check run does not fail on undefined.
+sd_db_password: ""
+sd_mysql_root_password: ""
+
+# Which hosts the application account may connect FROM. Derived by the playbook
+# from the MIDDLEWARE host's own address (its /24), so it needs no hardcoded CIDR
+# and survives an instance replacement inside the same subnet. Not '%': the grant
+# is a boundary, not a formality.
+#
+# This default is only ever used when the playbook has not run — it is
+# deliberately the widest value in the file, so if you ever see '10.%' on a live
+# server the derivation failed rather than the policy being lax.
+sd_db_client_pattern: "10.%"
+
+# Where the drop-in config goes. A drop-in rather than editing my.cnf in place:
+# an in-place edit needs a different lineinfile per distro and a package upgrade
+# can silently revert it.
+#
+# The 'zz-' prefix is load-bearing. `!includedir` reads *.cnf in ASCII order and
+# the last assignment wins, and Ubuntu's Oracle MySQL ships an UNNUMBERED
+# mysqld.cnf in this same directory that sets bind-address = 127.0.0.1. Anything
+# numeric (99-, 50-) sorts before 'mysqld.cnf' and gets silently overridden.
+sd_db_dropin_name: zz-servicedesk.cnf
+
+sd_db_confdir_mysql_debian: /etc/mysql/mysql.conf.d
+sd_db_confdir_mariadb_debian: /etc/mysql/mariadb.conf.d
+sd_db_confdir_mariadb_redhat: /etc/my.cnf.d
+sd_db_confdir_mariadb_suse: /etc/my.cnf.d
+
+sd_db_socket_debian: /var/run/mysqld/mysqld.sock
+sd_db_socket_redhat: /var/lib/mysql/mysql.sock
+sd_db_socket_suse: /run/mysql/mysql.sock

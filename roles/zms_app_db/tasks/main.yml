@@ -1,0 +1,344 @@
+---
+# Prepare this MariaDB host for whichever ZMS schemas are mapped to it.
+#
+# The mapping lives in vars/zms-app.yml. A host that owns no schema ends here,
+# which is how the Ubuntu database host (Oracle MySQL, not MariaDB) is skipped
+# without a special case.
+
+- name: Work out which schemas this host owns
+  ansible.builtin.set_fact:
+    zms_my_schemas: >-
+      {{ zms_app_services | dict2items
+         | selectattr('value.db_distro_group', 'in', group_names)
+         | list }}
+
+- name: Skip hosts with no ZMS schema mapped to them
+  ansible.builtin.meta: end_host
+  when: zms_my_schemas | length == 0
+
+# --- who may connect, derived rather than declared -----------------------------
+#
+# This block replaces a hardcoded `zms_app_db_client_pattern: "10.188.%"` from
+# the AWS build (the VPC the lab was first built in), which had quietly become a
+# grant that admitted nobody. The Azure VNets are 10.0.0.0/16 (custom),
+# 10.191.0.0/16 (web-app) and 10.90.0.0/16 (ring fence); derivation covers all.
+#
+# A DATABASE HOST CAN OWN MORE THAN ONE SCHEMA, and two schemas on one host can
+# belong to services running on DIFFERENT app hosts in different subnets. So the
+# answer is not one pattern but a list, and each pattern gets only the schemas
+# whose service actually lives behind it — a wider grant per pattern would let
+# the catalog host reach the orders schema, which is precisely the boundary this
+# lab is built to demonstrate.
+#
+# /24 rather than /16, for the reason spelled out in playbooks/servicedesk-db.yml:
+# a /16 spans every ring in a ring-fenced estate. /24 rather than /32 because a
+# replaced instance keeps its subnet but not its address.
+- name: Start the client derivation from empty
+  # Explicit, because set_fact persists for the life of the run: a second
+  # invocation of this role in the same run would otherwise append to the lists
+  # built by the first and grant each host the other's subnets.
+  ansible.builtin.set_fact:
+    zms_db_clients: []
+    zms_db_clients_resolved: []
+    zms_db_grants: []
+
+- name: Resolve the app host behind each schema this database host owns
+  ansible.builtin.set_fact:
+    zms_db_clients: >-
+      {{ zms_db_clients + [{
+           'service': item.key,
+           'db_name': item.value.db_name,
+           'app_distro_group': item.value.app_distro_group,
+           'app_host': ((groups[zms_app_web_group] | default([]))
+                        | intersect(groups[item.value.app_distro_group] | default([]))
+                        | intersect(zms_ring_peers)
+                        | first | default('', true))
+         }] }}
+  loop: "{{ zms_my_schemas }}"
+  loop_control:
+    label: "{{ item.key }} <- {{ item.value.app_distro_group }}"
+  when: zms_app_db_client_pattern | length == 0
+
+- name: Attach a /24 grant pattern to each client that resolved
+  ansible.builtin.set_fact:
+    zms_db_clients_resolved: >-
+      {{ zms_db_clients_resolved
+         + [item | combine({'pattern': (item.app_host.split('.')[0:3] | join('.')) ~ '.%'})] }}
+  loop: "{{ zms_db_clients | rejectattr('app_host', 'equalto', '') | list }}"
+  loop_control:
+    label: "{{ item.service }} -> {{ item.app_host }}"
+  when: zms_app_db_client_pattern | length == 0
+
+- name: Group the schemas by the pattern that may reach them
+  ansible.builtin.set_fact:
+    zms_db_grants: >-
+      {{ zms_db_grants + [{
+           'pattern': item,
+           'schemas': zms_db_clients_resolved | selectattr('pattern', 'equalto', item)
+                      | map(attribute='db_name') | list
+         }] }}
+  loop: "{{ zms_db_clients_resolved | map(attribute='pattern') | unique | list }}"
+  when: zms_app_db_client_pattern | length == 0
+
+- name: Use the manual override instead of the derivation
+  # One pattern, every schema on this host. Deliberately blunt: the override
+  # exists to rule the grant out while debugging, not to express a topology.
+  #
+  # It interacts with the sweep at the bottom of this file: a run with the
+  # override DROPS the derived accounts and leaves only the wide one, and the
+  # next run without it does the reverse. That is self-healing, not a trap, but
+  # it does mean the override is a diagnostic, never a setting to leave in place.
+  ansible.builtin.set_fact:
+    zms_db_grants:
+      - pattern: "{{ zms_app_db_client_pattern }}"
+        schemas: "{{ zms_my_schemas | map(attribute='value.db_name') | list }}"
+  when: zms_app_db_client_pattern | length > 0
+
+- name: Fail when no application host could be found for any schema here
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} owns
+      {{ zms_my_schemas | map(attribute='value.db_name') | join(', ') }}
+      but no host was found in '{{ zms_app_web_group }}' and the matching
+      app_distro_group{{ (" within ring " ~ zms_ring_group) if zms_ring_group | length > 0 else "" }},
+      so there is nobody to grant access to. Unresolved:
+      {{ zms_db_clients | selectattr('app_host', 'equalto', '')
+         | map(attribute='service') | join(', ') }}.
+      Check the Role/Distro tags on the app instances and that
+      `ansible-inventory --graph` shows both groups. To proceed anyway, pass an
+      explicit pattern with -e zms_app_db_client_pattern='10.x.%'.
+  when: zms_db_grants | length == 0
+
+- name: Warn about schemas whose application host did not resolve
+  # Not fatal: the other schemas on this host are still usable, and failing the
+  # whole converge over one absent distro would make a partially-built estate
+  # impossible to work on.
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: no application host resolved for
+      {{ zms_db_clients | selectattr('app_host', 'equalto', '')
+         | map(attribute='service') | join(', ') }}
+      on {{ inventory_hostname }} — those schemas will exist but no grant will
+      admit their service.
+  when:
+    - zms_app_db_client_pattern | length == 0
+    - zms_db_clients | selectattr('app_host', 'equalto', '') | list | length > 0
+
+- name: Show which subnets the grants will admit
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}
+      {{ '(ring ' ~ zms_ring_group ~ ')' if zms_ring_group | length > 0 else '(single-ring estate)' }}:
+      {{ zms_db_grants | map(attribute='pattern') | join(', ') }}
+      {{ '(manual override)' if zms_app_db_client_pattern | length > 0 else '(derived from the app hosts)' }}
+
+- name: Resolve the family-specific paths
+  ansible.builtin.set_fact:
+    zms_db_confdir: >-
+      {{ zms_app_db_confdir_redhat if ansible_facts['os_family'] == 'RedHat'
+         else zms_app_db_confdir_suse if ansible_facts['os_family'] == 'Suse'
+         else zms_app_db_confdir_debian }}
+    zms_db_socket: >-
+      {{ zms_app_db_socket_redhat if ansible_facts['os_family'] == 'RedHat'
+         else zms_app_db_socket_suse if ansible_facts['os_family'] == 'Suse'
+         else zms_app_db_socket_debian }}
+
+# noqa command-instead-of-module -- a read-only existence check. The service
+# module would try to START mariadb, which is exactly what we must not do
+# before knowing whether the distro playbook has installed it.
+- name: Confirm MariaDB is installed on this host # noqa command-instead-of-module
+  ansible.builtin.command: systemctl cat mariadb.service
+  register: zms_mariadb_unit
+  changed_when: false
+  failed_when: false
+
+- name: Fail with an actionable message when MariaDB is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} is mapped to schema(s)
+      {{ zms_my_schemas | map(attribute='value.db_name') | join(', ') }}
+      but has no mariadb.service. Run the matching distro playbook first
+      (playbooks/rhel-mariadb.yml or sles-mariadb.yml),
+      or point that service at a different db_distro_group in vars/zms-app.yml.
+  when: zms_mariadb_unit.rc != 0
+
+# community.mysql needs a Python MySQL client ON THE MANAGED HOST. The existing
+# *-mariadb playbooks install it, but this role must stand alone — the same
+# best-effort-then-pip pattern they use, for the same reason: the package is
+# named differently on every distro and is absent from some repos.
+- name: Check whether the Python MySQL client is importable
+  ansible.builtin.command: python3 -c "import pymysql"
+  register: zms_pymysql
+  changed_when: false
+  failed_when: false
+
+- name: Install a Python MySQL client from the distro repos (best effort)
+  ansible.builtin.package:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - python3-PyMySQL
+    - python3-pymysql
+  failed_when: false
+  when: zms_pymysql.rc != 0
+
+- name: Re-check the Python MySQL client
+  ansible.builtin.command: python3 -c "import pymysql"
+  register: zms_pymysql2
+  changed_when: false
+  failed_when: false
+  when: zms_pymysql.rc != 0
+
+- name: Install PyMySQL from pip as a last resort
+  ansible.builtin.pip:
+    name: PyMySQL
+    state: present
+    extra_args: "--break-system-packages"
+  failed_when: false
+  when:
+    - zms_pymysql.rc != 0
+    - zms_pymysql2.rc | default(1) != 0
+
+- name: Install the ZMS MariaDB drop-in configuration
+  ansible.builtin.template:
+    src: 99-zms-app.cnf.j2
+    dest: "{{ zms_db_confdir }}/99-zms-app.cnf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart mariadb
+
+- name: Ensure MariaDB is running and enabled
+  ansible.builtin.service:
+    name: mariadb
+    state: started
+    enabled: true
+
+# Restart now if the drop-in changed, so the grants below are created against
+# the server that will actually be serving.
+- name: Apply the configuration change
+  ansible.builtin.meta: flush_handlers
+
+- name: Create the application schemas
+  community.mysql.mysql_db:
+    name: "{{ item.value.db_name }}"
+    state: present
+    encoding: utf8mb4
+    collation: utf8mb4_unicode_ci
+    login_user: root
+    login_password: "{{ zms_mysql_root_password }}"
+    login_unix_socket: "{{ zms_db_socket }}"
+    check_implicit_admin: true
+  loop: "{{ zms_my_schemas }}"
+  loop_control:
+    label: "{{ item.value.db_name }}"
+  no_log: true
+
+# One account per CLIENT SUBNET, each granted only the schemas whose service
+# actually runs in that subnet. Not root, and not '%': the grant is the boundary
+# that stops catalog-svc reading orders data even if someone points it at the
+# wrong host. In the shipped topology every database host owns exactly one
+# schema, so this loop runs once — the list exists for the custom maps.
+- name: Create the application account and grant it only its own schemas
+  community.mysql.mysql_user:
+    name: "{{ zms_app_db_user }}"
+    host: "{{ item.pattern }}"
+    password: "{{ zms_app_db_password }}"
+    plugin: mysql_native_password
+    # -> "zms_catalog.*:ALL" (one entry per schema behind this pattern, joined by /)
+    priv: >-
+      {{ item.schemas | map('regex_replace', '^(.*)$', '\\1.*:ALL') | join('/') }}
+    state: present
+    login_user: root
+    login_password: "{{ zms_mysql_root_password }}"
+    login_unix_socket: "{{ zms_db_socket }}"
+    check_implicit_admin: true
+  loop: "{{ zms_db_grants }}"
+  loop_control:
+    label: "{{ zms_app_db_user }}@{{ item.pattern }} -> {{ item.schemas | join(', ') }}"
+  no_log: true
+
+# --- remove accounts left behind by an earlier, wider pattern ------------------
+#
+# In MySQL/MariaDB the host pattern is PART OF THE ACCOUNT IDENTITY, so changing
+# it does not edit the existing account — it creates a new one and leaves the old
+# one live with its original privileges. Every estate converged before the
+# derivation above still carries 'zmsapp'@'10.188.%'; without this sweep it keeps
+# it, and the tightening is cosmetic.
+#
+# Scoped to zms_app_db_user alone, so it cannot touch root, mysql.sys, the
+# Service Desk's sdapp, or anything another lab created on the same host.
+- name: List every existing account for this application user
+  community.mysql.mysql_query:
+    query: "SELECT host FROM mysql.user WHERE user = %s"
+    positional_args:
+      - "{{ zms_app_db_user }}"
+    login_user: root
+    login_password: "{{ zms_mysql_root_password }}"
+    login_unix_socket: "{{ zms_db_socket }}"
+    login_db: mysql
+  register: zms_db_accounts
+  changed_when: false
+  no_log: true
+
+- name: Work out which of them are superseded
+  ansible.builtin.set_fact:
+    zms_db_stale_hosts: >-
+      {{ (zms_db_accounts.query_result[0] | default([]) | map(attribute='host') | list)
+         | difference(zms_db_grants | map(attribute='pattern') | list) }}
+
+- name: Report the superseded accounts before removing them
+  # Outside no_log on purpose — host patterns are not secrets, and a silent
+  # DROP USER is exactly what you want to find in the converge log later.
+  ansible.builtin.debug:
+    msg: >-
+      Removing {{ zms_db_stale_hosts | length }} superseded account(s)
+      '{{ zms_app_db_user }}'@{{ zms_db_stale_hosts }}; the current one(s) are
+      {{ zms_db_grants | map(attribute='pattern') | list }}.
+  when: zms_db_stale_hosts | length > 0
+
+- name: Remove the superseded accounts
+  community.mysql.mysql_user:
+    name: "{{ zms_app_db_user }}"
+    host: "{{ item }}"
+    state: absent
+    login_user: root
+    login_password: "{{ zms_mysql_root_password }}"
+    login_unix_socket: "{{ zms_db_socket }}"
+    check_implicit_admin: true
+  loop: "{{ zms_db_stale_hosts }}"
+  loop_control:
+    label: "{{ zms_app_db_user }}@{{ item }}"
+  no_log: true
+
+- name: Detect whether firewalld is active # noqa command-instead-of-module
+  ansible.builtin.command: systemctl is-active firewalld
+  register: zms_db_firewalld
+  changed_when: false
+  failed_when: false
+
+- name: Open the MariaDB port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ zms_app_db_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: zms_db_firewalld.stdout | trim == 'active'
+
+- name: Confirm MariaDB is listening on a non-loopback address
+  ansible.builtin.shell: |
+    set -o pipefail
+    (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print $4}' | grep -E ':{{ zms_app_db_port }}$'
+  args:
+    executable: /bin/bash
+  register: zms_db_listen
+  changed_when: false
+  failed_when: false
+
+- name: Report the prepared schemas
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} ({{ ansible_facts['distribution'] }}) serving
+      {{ zms_my_schemas | map(attribute='value.db_name') | join(', ') }}
+      to '{{ zms_app_db_user }}'@{{ zms_db_grants | map(attribute='pattern') | list }};
+      listening on {{ zms_db_listen.stdout_lines | default(['unknown']) | join(', ') }}

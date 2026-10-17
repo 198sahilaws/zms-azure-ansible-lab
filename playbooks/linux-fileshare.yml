@@ -1,0 +1,137 @@
+---
+# Install Samba and export an SMB share on Linux file servers (role_fileshare).
+# Works on every distro: Debian family uses the 'smbd' service, RedHat and SUSE
+# use 'smb'. The share account password comes from the consolidated
+# secret (samba_password), resolved field-scoped and inline.
+#
+#   ansible-playbook playbooks/linux-fileshare.yml
+#   ansible-playbook playbooks/linux-fileshare.yml --limit fs01
+
+- name: Install Samba and export an SMB share
+  # role_fileshare spans Linux and Windows — intersect with os_linux.
+  hosts: "{{ target | default('role_fileshare:&os_linux') }}"
+  gather_facts: true
+  become: true
+  vars:
+    smb_share_name: data
+    smb_share_path: "/srv/samba/{{ smb_share_name }}"
+    smb_user: smbuser
+    # Samba's unit is 'smb' on the RedHat family AND on SUSE, but 'smbd' on
+    # Debian/Ubuntu.
+    smb_service: "{{ 'smb' if ansible_facts['os_family'] in ['RedHat', 'Suse'] else 'smbd' }}"
+    samba_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).samba_password | default('', true) }}
+  tasks:
+    - name: Install Samba (Debian family)
+      ansible.builtin.apt:
+        name: [samba, samba-common-bin]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Install Samba (RedHat family)
+      ansible.builtin.dnf:
+        name: samba
+        state: present
+        # Consistent with the other dnf tasks: dependency resolution can pull a
+        # package that conflicts with the preinstalled curl-minimal on
+        # RHEL 9+. Allow the swap rather than fail the transaction.
+        allowerasing: true
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Install Samba (SUSE family)
+      community.general.zypper:
+        name: samba
+        state: present
+      when: ansible_facts['os_family'] == "Suse"
+
+    - name: Detect SELinux enforcement mode
+      # `getenforce` is absent when SELinux tooling is not installed at all, so
+      # failed_when:false makes "no SELinux" an empty result rather than a failure.
+      ansible.builtin.command: getenforce
+      register: selinux_state
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure the share directory exists
+      ansible.builtin.file:
+        path: "{{ smb_share_path }}"
+        state: directory
+        mode: "0775"
+
+    # SELinux blocks Samba from serving a directory that is not labelled
+    # samba_share_t. This affects RHEL (SELinux enforcing by default) and
+    # SLES 16 (which switched from AppArmor to SELinux). Ubuntu and SLES 15
+    # are unaffected, so the whole block is gated on the runtime
+    # state rather than on the distro — a host with SELinux disabled skips it.
+    # Without this, smbd starts cleanly and every client gets "permission
+    # denied" — a silent functional failure.
+    - name: Configure SELinux for the Samba share
+      when: selinux_state.stdout | default('') | trim in ['Enforcing', 'Permissive']
+      block:
+        - name: Ensure SELinux policy tooling is present (RedHat family)
+          ansible.builtin.dnf:
+            name: policycoreutils-python-utils
+            state: present
+            allowerasing: true
+          when: ansible_facts['os_family'] == "RedHat"
+
+        - name: Ensure SELinux policy tooling is present (SUSE family)
+          community.general.zypper:
+            name: policycoreutils-python-utils
+            state: present
+          when: ansible_facts['os_family'] == "Suse"
+
+        - name: Label the share directory as samba_share_t
+          community.general.sefcontext:
+            target: "{{ smb_share_path }}(/.*)?"
+            setype: samba_share_t
+            state: present
+
+        - name: Apply the SELinux context to the share directory
+          ansible.builtin.command: "restorecon -R {{ smb_share_path }}"
+          register: smb_restorecon
+          changed_when: smb_restorecon.stdout | default('') | length > 0
+
+    - name: Define the share in smb.conf
+      ansible.builtin.blockinfile:
+        path: /etc/samba/smb.conf
+        marker: "# {mark} ANSIBLE MANAGED SHARE {{ smb_share_name }}"
+        block: |
+          [{{ smb_share_name }}]
+             path = {{ smb_share_path }}
+             browseable = yes
+             read only = yes
+             guest ok = no
+             valid users = {{ smb_user }}
+      notify: Restart samba
+
+    - name: Ensure the local Samba account exists
+      ansible.builtin.user:
+        name: "{{ smb_user }}"
+        create_home: false
+        shell: /usr/sbin/nologin
+      when: samba_password | length > 0
+
+    - name: Set the Samba password
+      ansible.builtin.shell:
+        cmd: "printf '%s\n%s\n' '{{ samba_password }}' '{{ samba_password }}' | smbpasswd -s -a {{ smb_user }}"
+      register: smbpw
+      changed_when: "'Added user' in smbpw.stdout"
+      no_log: true
+      when: samba_password | length > 0
+
+    - name: Ensure the Samba service is running and enabled
+      ansible.builtin.service:
+        name: "{{ smb_service }}"
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Restart samba
+      ansible.builtin.service:
+        name: "{{ smb_service }}"
+        state: restarted

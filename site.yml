@@ -1,0 +1,84 @@
+---
+# Push playbook for the estate. Two OS-scoped plays selected by the dynamic
+# groups built from the OS tag. Run with:
+#   ansible-playbook site.yml --check --diff      # dry run (report drift)
+#   ansible-playbook site.yml                     # full converge
+#   ansible-playbook site.yml --limit 'os_linux:&env_prod'
+#   ansible-playbook site.yml --tags packages --limit os_windows
+#
+# Blast-radius control (override at run time):
+#   ansible-playbook site.yml -e rolling_batch=25% -e max_fail_pct=10
+
+- name: Pre-flight checks (control node)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Assert the vault and the consolidated secret name are configured
+      ansible.builtin.assert:
+        that:
+          - azure_keyvault_name | length > 0
+          - ansible_secret_name | length > 0
+        fail_msg: >-
+          ANSIBLE_KEYVAULT_NAME and ANSIBLE_SECRET_NAME must be present in the
+          environment (Terraform writes them to /etc/ansible/estate.env, which
+          the systemd units load). Got vault='{{ azure_keyvault_name }}',
+          ansible_secret_name set={{ (ansible_secret_name | length > 0) }}. For a
+          manual run, use: sudo scripts/estate-shell.sh
+        success_msg: Pre-flight OK — vault and consolidated secret configured.
+
+    - name: Assert the dynamic inventory discovered managed hosts
+      ansible.builtin.assert:
+        that:
+          - (groups['os_linux'] | default([]) | length) + (groups['os_windows'] | default([]) | length) > 0
+        fail_msg: >-
+          No managed hosts discovered by the azure_rm inventory. Check that
+          ANSIBLE_AZURE_VM_RESOURCE_GROUPS (copied from ANSIBLE_RESOURCE_GROUP,
+          here '{{ azure_resource_group }}') names the estate's resource group,
+          that the VMs are running, and that they carry ManagedBy=Terraform
+          (capital T) and Environment='{{ lookup('ansible.builtin.env', 'ANSIBLE_ESTATE') }}'.
+          `ansible-inventory --graph -vv` prints why each VM was excluded.
+        success_msg: >-
+          Discovered {{ (groups['os_linux'] | default([]) | length)
+          + (groups['os_windows'] | default([]) | length) }} managed host(s).
+
+- name: Linux estate
+  hosts: os_linux
+  gather_facts: true
+  serial: "{{ rolling_batch | default('100%') }}"
+  max_fail_percentage: "{{ max_fail_pct | default(0) }}"
+  roles:
+    - role: baseline
+      tags: [baseline]
+  tasks:
+    # Packages install from the distro's built-in repos (Ubuntu archive, RHEL
+    # RHUI, SUSE public-cloud update servers) over the NAT Gateway — no
+    # internal mirror required.
+    - name: Install baseline package
+      ansible.builtin.package:
+        name: "{{ linux_baseline_package | default('htop') }}"
+        state: present
+      tags: [packages]
+
+- name: Windows estate
+  hosts: os_windows
+  gather_facts: true
+  # A Windows host that can't be reached (e.g. WinRM creds not yet synced) is
+  # logged as unreachable but must NOT abort the converge — the Linux role
+  # services run after this play and are independent of Windows.
+  ignore_unreachable: true
+  serial: "{{ rolling_batch | default('100%') }}"
+  max_fail_percentage: "{{ max_fail_pct | default(0) }}"
+  roles:
+    - role: baseline
+      tags: [baseline]
+  tasks:
+    # Chocolatey installs from its default public community feed
+    # (https://community.chocolatey.org/api/v2/), configured when choco is
+    # installed — no internal source required.
+    - name: Install a package from the public Chocolatey community feed
+      chocolatey.chocolatey.win_chocolatey:
+        name: "{{ windows_baseline_package | default('7zip') }}"
+        state: present
+      tags: [packages]

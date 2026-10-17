@@ -1,0 +1,6 @@
+---
+- name: Restart the database server
+  ansible.builtin.service:
+    name: "{{ sd_db_unit | default('mysql') }}"
+    state: restarted
+  listen: restart sd database

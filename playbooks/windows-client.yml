@@ -1,0 +1,16 @@
+---
+# Minimal 'client' baseline for Windows client-role hosts (role_client). Domain
+# join is handled by windows-domain-join.yml; this is the hook for client-specific
+# configuration (extend as needed).
+#
+#   ansible-playbook playbooks/windows-client.yml
+#   ansible-playbook playbooks/windows-client.yml --limit wclient01
+
+- name: Configure Windows client hosts
+  # role_client spans Linux and Windows — intersect with os_windows.
+  hosts: "{{ target | default('role_client:&os_windows') }}"
+  ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
+  gather_facts: false
+  tasks:
+    - name: Confirm the client is reachable over WinRM
+      ansible.windows.win_ping:

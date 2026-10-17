@@ -1,0 +1,62 @@
+---
+# Install MySQL and run it as a service on SELECTED Ubuntu servers.
+#
+#   ansible-playbook playbooks/ubuntu-mysql.yml --limit db01
+#   ansible-playbook playbooks/ubuntu-mysql.yml -e target=role_db
+#
+# By default this installs MySQL and ensures the service is running/enabled.
+# To also set the root password, pass it in (ideally from Secrets Manager):
+#   -e mysql_root_password="$(...)"
+# or uncomment the lookup below. On a fresh Ubuntu install the root account uses
+# the auth_socket plugin (password is ignored), so the root-password step below
+# also switches root to mysql_native_password so the password actually works.
+
+- name: Install and enable MySQL
+  # Role AND distro intersection: only Ubuntu DB hosts, not every Ubuntu host.
+  hosts: "{{ target | default('role_db:&distro_ubuntu') }}"
+  gather_facts: true
+  vars:
+    # Root password from the single consolidated secret, resolved field-scoped
+    # inline (see group_vars/all.yml note). Empty (default) skips the root-password
+    # step; set mysql_root_password in secrets.auto.tfvars to enable it.
+    mysql_root_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).mysql_root_password | default('', true) }}
+  tasks:
+    - name: Skip non-Debian hosts
+      ansible.builtin.meta: end_host
+      when: ansible_os_family != "Debian"
+
+    - name: Install MySQL server and the Python client (for Ansible mysql modules)
+      ansible.builtin.apt:
+        name:
+          - mysql-server
+          - python3-pymysql
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure MySQL is started and enabled at boot
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Set the MySQL root password (switch root from auth_socket to password auth)
+      community.mysql.mysql_user:
+        name: root
+        host: localhost
+        password: "{{ mysql_root_password }}"
+        # Fresh Ubuntu root uses the auth_socket plugin (password ignored). Force
+        # mysql_native_password so the supplied password actually authenticates.
+        plugin: mysql_native_password
+        login_unix_socket: /run/mysqld/mysqld.sock
+        # Idempotent across reruns: try the implicit socket admin first (before the
+        # switch), then fall back to the password we just set.
+        check_implicit_admin: true
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        state: present
+      no_log: true
+      when: mysql_root_password | length > 0

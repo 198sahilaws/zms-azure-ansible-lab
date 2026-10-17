@@ -1,0 +1,45 @@
+---
+# Minimal 'client' baseline for Linux client-role hosts (role_client): common CLI
+# tooling plus the SMB client so they can mount the fileshare. Extend as needed.
+#
+#   ansible-playbook playbooks/linux-client.yml
+#   ansible-playbook playbooks/linux-client.yml --limit client01
+
+- name: Configure Linux client hosts
+  # role_client spans Linux and Windows — intersect with os_linux.
+  hosts: "{{ target | default('role_client:&os_linux') }}"
+  gather_facts: true
+  become: true
+  vars:
+    # SMB client tooling only. An editor is deliberately NOT listed here: the
+    # package name differs per distro (vim vs vim-enhanced on RHEL) and the
+    # baseline role already installs one, chosen per-distro via group_vars.
+    # Play vars outrank group_vars, so a distro override of this list would not
+    # take effect — keep it distro-neutral.
+    client_packages: [cifs-utils, curl]
+  tasks:
+    - name: Install client packages (Debian family)
+      ansible.builtin.apt:
+        name: "{{ client_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Install client packages (RedHat family)
+      ansible.builtin.dnf:
+        name: "{{ client_packages }}"
+        state: present
+        # client_packages includes `curl`, which conflicts with the preinstalled
+        # `curl-minimal` on RHEL 9+. Without allowerasing the whole
+        # task fails ("curl-minimal conflicts with curl") — the same failure the
+        # baseline role hit. Latent until now only because the sole client host
+        # in the default estate is Ubuntu.
+        allowerasing: true
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Install client packages (SUSE family)
+      community.general.zypper:
+        name: "{{ client_packages }}"
+        state: present
+      when: ansible_facts['os_family'] == "Suse"

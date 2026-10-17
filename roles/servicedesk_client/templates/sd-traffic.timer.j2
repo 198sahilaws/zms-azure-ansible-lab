@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ZMS lab: service desk traffic every {{ sd_traffic_interval }}
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec={{ sd_traffic_interval }}
+# WITHOUT THIS every host with the timer fires on the same second and the flow
+# log shows a synchronised pulse no real estate produces — which is exactly the
+# artefact that misleads a clustering algorithm looking at the flows.
+RandomizedDelaySec={{ sd_traffic_jitter }}
+Persistent=false
+
+[Install]
+WantedBy=timers.target

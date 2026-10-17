@@ -1,0 +1,50 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.Python
+
+# Ansible / Terraform / cloud artifacts
+*.retry
+.ansible/
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Secrets and local config
+*.pem
+*.key
+*.crt
+*.csr
+.env
+.env.*
+.local
+
+# Build and packaging
+build/
+dist/
+out/
+*.egg-info/

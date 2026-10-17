@@ -1,0 +1,52 @@
+---
+# Connection settings for RHEL hosts (inventory group distro_rhel, keyed off the
+# Distro tag Terraform sets). Covers RHEL 8, 9 and 10 — one group for all major
+# versions, because dnf / httpd / mariadb / samba behave the same across them.
+#
+# ansible_user is set directly here (and NOT in os_linux.yml) so the Distro group
+# is the single source of truth for the login user across the mixed estate — the
+# same pattern as distro_ubuntu / distro_sles, with no reliance on
+# ansible_group_priority.
+#
+# 'ec2-user' is kept from AWS so nothing else changes, but on Azure it is not an
+# image default: Terraform creates it (compute-linux var.admin_usernames["rhel"]).
+# Change both together or SSH fails with publickey.
+ansible_user: ec2-user
+
+# --- Base-repo-safe package overrides ---------------------------------------
+# The baseline role defaults to [htop, curl, vim], but on RHEL:
+#   * `htop` is NOT in base/AppStream — it ships in EPEL, which is not enabled
+#     on the Azure RHEL (RHUI) images. Installing it fails every converge.
+#   * plain `vim` is not a package name on RHEL; the editor is `vim-enhanced`
+#     (only `vim-minimal` is preinstalled).
+# These group_vars override the role defaults (role defaults are the lowest
+# precedence). `curl` is safe here because the baseline RedHat branch passes
+# allowerasing, which resolves the curl / curl-minimal conflict on RHEL 9+.
+#
+# To use the role defaults instead, enable EPEL on these hosts first:
+#   dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-$(rpm -E %rhel).noarch.rpm
+baseline_linux_packages:
+  - curl
+  - vim-enhanced
+  # chrony is listed explicitly because the baseline role only STARTS chronyd —
+  # it never installs it. RHEL images normally ship chrony, but relying on that is
+  # the same unstated assumption that would break on a minimal image. The package
+  # task runs before the service task, so ordering is guaranteed.
+  - chrony
+
+# Same reason: site.yml installs `linux_baseline_package | default('htop')`.
+linux_baseline_package: curl
+
+# NOTE ON VERSION-SPECIFIC LOGIC
+# RHEL hosts are also placed in an osver_<major> group (osver_8 / osver_9 /
+# osver_10) from the OSVersion tag, so a specific release can be targeted:
+#   ansible-playbook playbooks/rhel-httpd.yml --limit 'role_web:&osver_8'
+# Inside a task, prefer the fact over the group:
+#   when: ansible_facts['distribution_major_version'] | int >= 9
+# The fact reflects what is actually installed; the tag reflects what Terraform
+# intended, and the two can diverge after an in-place upgrade.
+#
+# The baseline role, the fileshare playbook and the client playbook handle these
+# hosts through their os_family == "RedHat" branches, including the
+# `allowerasing: true` that works around the curl / curl-minimal conflict on
+# RHEL 9+. (On AWS those branches also served Amazon Linux, now removed.)

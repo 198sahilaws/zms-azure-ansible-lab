@@ -1,0 +1,38 @@
+---
+# Minimal, idempotent Linux baseline.
+- name: Ensure a consistent timezone
+  community.general.timezone:
+    name: "{{ baseline_timezone }}"
+
+- name: Ensure baseline packages are present (Debian family)
+  ansible.builtin.apt:
+    name: "{{ baseline_linux_packages }}"
+    state: present
+    # No update_cache here: the baseline packages ship in the image, so
+    # baseline stays network-independent. The role playbooks that must
+    # DOWNLOAD packages (ubuntu-apache2, ubuntu-mysql, ...) refresh the cache
+    # themselves, over the NAT Gateway.
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Ensure baseline packages are present (RedHat family)
+  ansible.builtin.dnf:
+    name: "{{ baseline_linux_packages }}"
+    state: present
+    # RHEL 9+ ships 'curl-minimal', which conflicts with the full 'curl'
+    # package. allowerasing lets dnf swap it instead of failing the
+    # transaction ("curl-minimal conflicts with curl").
+    allowerasing: true
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Ensure baseline packages are present (SUSE family)
+  community.general.zypper:
+    name: "{{ baseline_linux_packages }}"
+    state: present
+  when: ansible_facts['os_family'] == "Suse"
+
+- name: Ensure chrony (time sync) is enabled and running
+  ansible.builtin.service:
+    name: "{{ baseline_chrony_service }}"
+    state: started
+    enabled: true
+  when: baseline_manage_timesync | bool

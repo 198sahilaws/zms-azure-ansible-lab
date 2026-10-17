@@ -1,0 +1,153 @@
+---
+# Service Desk lab — topology and deployment settings.
+#
+# SINGLE SOURCE OF TRUTH for the application. Every servicedesk-*.yml playbook
+# loads this file via `vars_files`, so the host/port/schema map is declared once
+# and nothing is hardcoded in a task, template or unit file. Same contract as
+# vars/zms-app.yml.
+#
+# WHY GROUP NAMES AND NOT IP ADDRESSES
+# The estate is discovered dynamically (inventory/azure_rm.yml, hostnames =
+# primary private IP), so a VM replacement can change its private IP. The
+# map below names INVENTORY GROUPS and each play resolves the intersection to an
+# address at run time:
+#
+#     groups['role_db'] | intersect(groups['distro_ubuntu']) | first
+#
+# Re-run Terraform, get new IPs, converge again — the map still holds.
+#
+# TOPOLOGY (deployments/web-app builds exactly this)
+#
+#   host                                role        what runs there
+#   ----------------------------------  ----------  --------------------------
+#   role_web        & distro_ubuntu     web         gunicorn :8090, HTML only
+#   role_middleware & distro_ubuntu     middleware  gunicorn :8091, all SQL
+#   role_db         & distro_ubuntu     db          MySQL 8, `servicedesk`
+#   role_client     & distro_ubuntu     client      sd-traffic timer (real HTTP)
+#
+# Every request crosses TWO host boundaries now:
+#
+#   client --HTTP:8090--> web --HTTP:8091--> middleware --MySQL:3306--> db
+#
+# on a fresh TCP connection each time. That is the point of the app: three
+# hops, three hosts, three sets of flows, and a credential that exists on
+# exactly one of them.
+#
+# ONE ROLE SERVES TWO TIERS. roles/servicedesk_app installs the same payload on
+# the web and middleware hosts; sd_tier (set per-play, not here) picks which
+# Flask app runs. Same idea as roles/zms_microservice being deployed four times
+# with different ZMS_SERVICE values.
+#
+# PORT 8090 DID NOT MOVE. It is still the front door and still on the Role=web
+# host, so sd-traffic.py, servicedesk-verify.yml, the runbook and every
+# bookmarked URL are unchanged. The web tier forwards /api/* and /stats to the
+# middleware verbatim, so those responses are byte-identical to what the
+# single-tier app returned.
+#
+# NOTE ON MySQL vs MariaDB: the Ubuntu db host runs ORACLE MySQL
+# (playbooks/ubuntu-mysql.yml installs mysql-server), unlike the rest of the
+# estate which runs MariaDB. The schema is deliberately kept to syntax both
+# accept, and the role probes for whichever unit exists, so repointing this app
+# at a MariaDB host needs no code change — only an edit below.
+
+# --- Placement ---------------------------------------------------------------
+# Role group intersected with distro group. Change these to move the app.
+sd_app_group: role_web
+sd_app_distro_group: distro_ubuntu
+
+# role_middleware comes from the VM tag Role=middleware, which Terraform sets
+# from linux_hosts in deployments/web-app. The tag value is lowercase
+# and the group name is derived verbatim, so Role=Middleware would produce
+# role_Middleware and match nothing — see the tag/inventory contract in
+# inventory/azure_rm.yml.
+sd_middleware_group: role_middleware
+sd_middleware_distro_group: distro_ubuntu
+
+sd_db_group: role_db
+sd_db_distro_group: distro_ubuntu
+
+sd_client_group: role_client
+sd_client_distro_group: distro_ubuntu
+
+# --- Staying inside one ring ---------------------------------------------------
+#
+# THE PROBLEM. Every peer lookup above ends in `| first`. With one copy of the
+# app that is unambiguous. deployments/multi-environment-ring-fencing builds two
+# or three copies — prod, uat and dev each have their own web, middleware, db and
+# client — so `role_middleware | first` returns whichever host happens to sort
+# first across ALL rings, and PROD's web tier would be pointed at DEV's
+# middleware. The ring NSGs then drop the traffic, so the symptom is not a
+# subtle mis-wiring but two rings that are simply dead.
+#
+# THE FIX. Intersect every peer lookup with sd_ring_peers before taking `first`:
+#
+#     groups[sd_db_group] | intersect(groups[sd_db_distro_group])
+#                         | intersect(sd_ring_peers) | first
+#
+# Both variables are evaluated lazily, per host, at the point of use — so
+# group_names below is the CURRENT host's group list, not the control node's.
+#
+# INERT EVERYWHERE ELSE. Only the ring-fenced deployment tags instances with
+# AppEnv, so in adds / web-app / custom sd_ring_group resolves to '' and
+# sd_ring_peers falls back to every host in the inventory, making the extra
+# intersect a no-op. The appenv_* groups themselves come from the AppEnv
+# keyed_groups entry in inventory/azure_rm.yml.
+sd_ring_group: "{{ group_names | select('match', '^appenv_') | list | first | default('', true) }}"
+sd_ring_peers: "{{ groups[sd_ring_group] | default(groups['all'] | default([]), true) }}"
+
+# --- Application -------------------------------------------------------------
+sd_app_port: 8090 # free: ZMS uses 8001-8003 and 8080, Apache uses 80
+# Deliberately a different port from 8090 even though it is a different host:
+# in a flow log the port alone then tells you which tier answered.
+sd_middleware_port: 8091
+sd_db_name: servicedesk
+sd_db_port: 3306
+
+# The two timeouts that decide WHICH TIER GETS BLAMED during a database outage.
+# sd_http_timeout must stay comfortably the larger: the web tier has to wait
+# long enough for the middleware to give up on MySQL and return its considered
+# 503. Invert them and the web tier times out first, reports the middleware as
+# unreachable, and the failure demo sends you to the wrong host.
+sd_http_timeout: 8.0 # web -> middleware, seconds
+sd_db_connect_timeout: 5 # middleware -> MySQL, seconds
+
+sd_app_root: /opt/servicedesk # code + virtualenv
+sd_app_config_dir: /etc/servicedesk # environment file
+sd_app_log_dir: /var/log/servicedesk
+sd_app_user: sdapp
+sd_app_group_name: sdapp
+
+# Emitted as SD_APP_VERSION into /etc/servicedesk/servicedesk.env on BOTH tiers.
+# No Python module reads it; its two jobs are to make "which payload is on this
+# host" answerable with grep, and to give you a way to force a restart — bumping
+# it rewrites the env file, which notifies the restart handler on the next
+# converge. It does NOT re-copy the payload: the file copy is content-based, so
+# an unchanged tree stays unchanged no matter what this says.
+#
+# Keep in step with __version__ in roles/servicedesk_app/files/app/sdapp/__init__.py.
+sd_app_version: "2.0.0" # 2.x = three tiers; 1.x was the combined web+logic app
+
+# Two is plenty for a lab and keeps a Standard_B2s_v2 comfortable alongside Apache.
+# Applied to both tiers: the web tier's workers spend their time blocked on the
+# middleware rather than on MySQL, but the count that is right for one is right
+# for the other at this traffic level.
+sd_app_workers: 2
+
+# --- Seed data ---------------------------------------------------------------
+# The seeder is idempotent (no-ops once tickets exist) and deterministic: the
+# same seed produces byte-identical content, so "did the data change?" is a
+# question you can answer with a checksum. Change sd_seed_random to get a
+# different-but-still-reproducible dataset.
+sd_seed_users: 40
+sd_seed_tickets: 500
+sd_seed_days: 90
+sd_seed_random: 20260901
+
+# --- Traffic generator -------------------------------------------------------
+# Runs on the client host as a systemd timer. Interval plus jitter, following
+# the zms-order-generator pattern: without RandomizedDelaySec every host fires
+# on the same second and the flow log shows a synchronised pulse no real estate
+# produces — exactly the artefact that misleads a clustering algorithm.
+sd_traffic_enabled: true
+sd_traffic_interval: "2min"
+sd_traffic_jitter: "45s"

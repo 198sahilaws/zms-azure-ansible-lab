@@ -1,0 +1,133 @@
+---
+# Promote read-only domain controllers (role_rodc) into the EXISTING forest.
+# microsoft.ad.domain_controller promotes an already domain-joined member, so the
+# sequence is: point DNS at a writable DC -> join the domain -> promote read-only.
+# Run windows-adds.yml (the forest root) first.
+#
+#   ansible-playbook playbooks/windows-rodc.yml
+#   ansible-playbook playbooks/windows-rodc.yml -e domain_dns_server=10.0.0.10
+
+- name: Promote read-only domain controllers
+  hosts: "{{ target | default('role_rodc') }}"
+  ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
+  gather_facts: true
+  vars:
+    ad_domain_name: alcor.co.in
+    # Writable DC private IP, auto-discovered from the inventory (the role_dc
+    # group; its inventory hostname IS the private IP).
+    #
+    # This MUST be set or the join fails with "The specified domain either does
+    # not exist or could not be contacted": AD domain join resolves the domain via
+    # SRV records (_ldap._tcp.dc._msdcs.<domain>) that ONLY the domain
+    # controller's own DNS serves. Azure-provided DNS (168.63.129.16) does not
+    # have them, and deployments/adds builds no Azure Private DNS zone at all
+    # (one named alcor.co.in would shadow the DCs).
+    # Override with -e domain_dns_server=<ip> if the DC is outside this inventory.
+    domain_dns_server: "{{ (groups['role_dc'] | default([]) | first) | default('', true) }}"
+    # Credentials from the consolidated secret, resolved field-scoped and inline.
+    domain_admin_user: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).domain_join_username | default('', true) }}
+    domain_admin_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).domain_join_password | default('', true) }}
+    dsrm_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).dsrm_password | default('', true) }}
+  tasks:
+    - name: Skip hosts that could not be reached (no facts gathered = unreachable)
+      ansible.builtin.meta: end_host
+      when: ansible_facts | length == 0
+
+    - name: Assert domain-join and DSRM credentials are present
+      ansible.builtin.assert:
+        that:
+          - domain_admin_user | length > 0
+          - domain_admin_password | length > 0
+          - dsrm_password | length > 0
+        fail_msg: >-
+          domain_join_username / domain_join_password / dsrm_password must be set
+          in secrets.auto.tfvars (written to the consolidated secret) before promoting an RODC.
+      no_log: true
+
+    - name: Fail early if no domain controller was discovered
+      ansible.builtin.assert:
+        that:
+          - domain_dns_server | length > 0
+        fail_msg: >-
+          No host in the role_dc group, so the DC's DNS address is unknown and the
+          domain join cannot resolve {{ ad_domain_name }}. Ensure windows_server_roles
+          includes a "dc" entry, or pass -e domain_dns_server=<ip>.
+
+    - name: Point DNS at the domain controller
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers:
+          - "{{ domain_dns_server }}"
+
+    - name: Flush the DNS resolver cache so the new server is used immediately
+      ansible.windows.win_command: ipconfig /flushdns
+      changed_when: false
+
+    # The DC may still be completing promotion (AD DS + DNS starting) when this
+    # play runs, so wait for its LDAP port rather than failing the join outright.
+    - name: Wait for the domain controller to serve LDAP
+      ansible.windows.win_wait_for:
+        host: "{{ domain_dns_server }}"
+        port: 389
+        timeout: 600
+        state: started
+
+    - name: Join the domain as a member (prerequisite for promotion)
+      microsoft.ad.membership:
+        dns_domain_name: "{{ ad_domain_name }}"
+        domain_admin_user: "{{ domain_admin_user }}"
+        domain_admin_password: "{{ domain_admin_password }}"
+        state: domain
+        reboot: true
+      register: rodc_join
+      until: rodc_join is succeeded
+      retries: 5
+      delay: 60
+      no_log: "{{ rodc_no_log | default(true) | bool }}"
+
+    # The join reboots the host. Promotion must not start until it is fully back
+    # and the domain secure channel is usable, or DCPromo fails part-way.
+    # NOTE: use ansible.builtin.wait_for_connection — there is NO
+    # ansible.windows.win_wait_for_connection module. The builtin one is
+    # connection-plugin aware and works over WinRM.
+    - name: Wait for the host to come back after the domain-join reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        sleep: 10
+
+    - name: Settle before promotion (netlogon / secure channel)
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Promote to a read-only domain controller
+      microsoft.ad.domain_controller:
+        dns_domain_name: "{{ ad_domain_name }}"
+        domain_admin_user: "{{ domain_admin_user }}"
+        domain_admin_password: "{{ domain_admin_password }}"
+        safe_mode_password: "{{ dsrm_password }}"
+        read_only: true
+        install_dns: true
+        # RODC promotion needs an explicit AD site; the default site of a new
+        # forest is Default-First-Site-Name. Override with -e rodc_site_name=...
+        site_name: "{{ rodc_site_name | default('Default-First-Site-Name') }}"
+        state: domain_controller
+        reboot: true
+      register: rodc_promote
+      until: rodc_promote is succeeded
+      retries: 3
+      delay: 60
+      # Credentials are redacted by default. To SEE the real DCPromo error when
+      # debugging, re-run with:  -e rodc_no_log=false
+      no_log: "{{ rodc_no_log | default(true) | bool }}"
+
+    - name: Forward non-AD DNS queries to Azure DNS
+      ansible.builtin.include_tasks: tasks/azure-dns-forwarder.yml

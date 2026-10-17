@@ -1,0 +1,8 @@
+---
+- name: Restart zms service
+  ansible.builtin.systemd:
+    # zms_handler_service, not zms_service_name: see tasks/main.yml.
+    name: "zms-{{ zms_handler_service }}.service"
+    state: restarted
+    daemon_reload: true
+  listen: restart zms service

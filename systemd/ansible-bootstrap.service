@@ -1,0 +1,22 @@
+[Unit]
+Description=Ansible control-node self-converge (reconverge.sh -> bootstrap.yml)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/control-repo
+# The leading '-' is deliberate. Without it, a node whose cloud-init was
+# interrupted before estate.env was written refuses to START this unit at all,
+# so the run that would surface the problem (bootstrap.yml's assert naming the
+# missing variable) never happens.
+EnvironmentFile=-/etc/ansible/estate.env
+# Invoke via /bin/bash so a lost execute bit (e.g. after a fresh git clone on a
+# filesystem that dropped the mode) can't cause a systemd 203/EXEC failure.
+ExecStart=/bin/bash /opt/control-repo/scripts/reconverge.sh
+# The first run on a new node may pip-install azure.azcollection's Python SDK
+# set (several minutes). Give it room rather than relying on the default.
+TimeoutStartSec=1800
+# Record result to /var/log/ansible and alert on failure.
+ExecStopPost=/bin/bash /opt/control-repo/scripts/notify-result.sh bootstrap

@@ -1,0 +1,22 @@
+---
+# Install the traffic generator on the client host.
+#
+#   ansible-playbook playbooks/servicedesk-client.yml
+#   ansible-playbook playbooks/servicedesk-client.yml -e sd_traffic_enabled=false
+#
+# Needs no credentials: the generator only speaks HTTP to the web host, on
+# port 8090, exactly as before the tiers were split. The web/middleware split
+# happens behind that port, so nothing in roles/servicedesk_client or
+# sd-traffic.py changed — and if this file ever needs to know about the
+# middleware, something has leaked through the front door that should not have.
+#
+# Run AFTER servicedesk-middleware.yml and servicedesk-web.yml, or the first
+# burst simply fails harmlessly and the timer picks it up on the next tick.
+
+- name: Install the service desk traffic generator
+  hosts: "{{ target | default(sd_client_group ~ ':&' ~ sd_client_distro_group) }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/servicedesk.yml
+  roles:
+    - servicedesk_client

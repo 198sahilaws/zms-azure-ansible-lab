@@ -1,0 +1,29 @@
+---
+# Install Apache2 and run it as a service on SELECTED Ubuntu servers.
+#
+#   ansible-playbook playbooks/ubuntu-apache2.yml --limit web01,web02
+#   ansible-playbook playbooks/ubuntu-apache2.yml -e target=role_web
+
+- name: Install and enable Apache2
+  # Role AND distro: role_web spans Ubuntu, RHEL, SLES and Windows hosts, so the
+  # intersection is required — otherwise Apache would be installed on DB/client
+  # hosts (or attempted on Windows).
+  hosts: "{{ target | default('role_web:&distro_ubuntu') }}"
+  gather_facts: true
+  tasks:
+    - name: Skip non-Debian hosts
+      ansible.builtin.meta: end_host
+      when: ansible_os_family != "Debian"
+
+    - name: Install Apache2
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure Apache2 is started and enabled at boot
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: true

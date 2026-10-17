@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically converge the managed estate
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=60min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,131 @@
+---
+# Azure dynamic inventory. Replaces inventory/aws_ec2.yml.
+#
+# Discovers the VMs Terraform built and groups them by the same tags as on AWS
+# (OS, Distro, OSVersion, Role, Environment, AppEnv), so every playbook, role
+# and group_vars file keeps the group names it had: os_linux, distro_rhel,
+# osver_8, role_web, env_webapp, appenv_prod and so on.
+#
+# The file name must end in azure_rm.yml: the plugin refuses any other name.
+plugin: azure.azcollection.azure_rm
+
+# --- Authentication -----------------------------------------------------------
+# Nothing secret in this file. The control node authenticates with its
+# user-assigned managed identity, configured entirely by environment variables
+# that Terraform writes into /etc/ansible/estate.env:
+#   ANSIBLE_AZURE_AUTH_SOURCE=msi   selects managed-identity auth
+#   AZURE_CLIENT_ID                 picks the user-assigned identity
+#   AZURE_SUBSCRIPTION_ID           the subscription to list VMs in
+# The identity holds Reader on the estate's resource group and nothing else
+# (Terraform modules/identity), which is the Azure form of the AWS
+# ec2-inventory-read policy.
+#
+# From a workstation instead: `az login`, then
+#   ANSIBLE_AZURE_AUTH_SOURCE=cli ANSIBLE_AZURE_VM_RESOURCE_GROUPS=<rg> ansible-inventory --graph
+
+# --- Estate scope ---------------------------------------------------------------
+# THE RESOURCE GROUP IS THE ESTATE BOUNDARY. Terraform builds one resource group
+# per deployment and writes its name to estate.env as ANSIBLE_RESOURCE_GROUP.
+# scripts/converge.sh, scripts/reconverge.sh and scripts/estate-shell.sh copy it
+# into ANSIBLE_AZURE_VM_RESOURCE_GROUPS, which the plugin reads in preference to
+# the list below. The plugin does not template this option, so an env lookup
+# here would be sent to Azure as a literal string; the environment variable is
+# the only way to make it dynamic.
+#
+# Why this is safer than the AWS tag filter: on AWS an unset ANSIBLE_ESTATE
+# widened the filter to '*' and the inventory silently picked up every other
+# deployment's instances in the account. Here the fallback below ('*', the whole
+# subscription) fails closed on the control node, because its identity has
+# Reader on one resource group only and a subscription-wide list is refused.
+# Only an operator running with broader rights (az login) can widen it.
+include_vm_resource_groups:
+  - "*"
+
+# No scale sets in this lab.
+include_vmss_resource_groups: []
+
+# Two more filters, as belt and braces inside the resource group. The plugin's
+# own default_host_filters still apply on top of these: VMs that are not
+# running, or not fully provisioned, are dropped.
+exclude_host_filters:
+  # Only Terraform-built VMs (as AWS tag:ManagedBy: Terraform). Case-sensitive.
+  - tags.ManagedBy | default('') != 'Terraform'
+  # Same Environment as this control node, when ANSIBLE_ESTATE is set (AWS
+  # tag:Environment filter). Unset means no extra filtering, not "match none".
+  - >-
+    (lookup('ansible.builtin.env', 'ANSIBLE_ESTATE') | default('', true) | length > 0)
+    and (tags.Environment | default('') != lookup('ansible.builtin.env', 'ANSIBLE_ESTATE'))
+
+# --- Host names and addresses --------------------------------------------------
+# Inventory hostname = primary private IP, exactly as on AWS
+# (hostnames: private-ip-address). This is load-bearing: vars/zms-app.yml,
+# vars/servicedesk.yml and the AD plays build peer URLs and DNS server
+# addresses from inventory hostnames, so they must be IPs.
+hostnames:
+  - private_ipv4_addresses | first
+  - default
+
+# ansible_host must be set explicitly. The plugin's default prefers a PUBLIC IP,
+# and the two bastions have one; the control node sits inside the VNet and
+# reaches everything by private address.
+hostvar_expressions:
+  ansible_host: private_ipv4_addresses | first
+
+# --- Groups from tags ------------------------------------------------------------
+# Same keys, prefixes and separators as aws_ec2.yml. A host without a tag
+# joins no group for it (AWS behaviour), which needs BOTH settings below:
+#   - fail_on_template_errors: false. This plugin defaults it to true (aws_ec2
+#     defaults to non-strict), and in strict mode an empty or missing key is an
+#     error that aborts the REST of that host's groups: an Ubuntu host (no
+#     OSVersion tag) then never reaches role_* or env_*, and the bastions and
+#     the control node lose groups too. Found by rendering this file against
+#     fake VM data before first use.
+#   - `| default('')` on every key, so a missing tag is an empty key that is
+#     skipped quietly rather than a template error that is swallowed.
+# The trade-off of non-strict mode: a typo in a filter or key expression is
+# silently ignored rather than fatal, so check `ansible-inventory --graph`
+# after editing this file.
+fail_on_template_errors: false
+#
+# Tag VALUES are case-sensitive here exactly as on AWS: Role=Middleware gives
+# role_Middleware and matches no playbook. Terraform validates role names, so
+# this only bites on hand-tagged VMs.
+keyed_groups:
+  # OS: linux | windows | bastion (Windows bastion). Selects ssh vs winrm via
+  # group_vars/os_linux.yml and os_windows.yml. The Linux bastion has no OS tag
+  # and joins no os_* group; the Windows bastion joins os_bastion, which has no
+  # group_vars file. Neither is ever configured.
+  - key: tags.OS | default('')
+    prefix: os
+    separator: "_"
+  # Distro: ubuntu | rhel | sles. Sets ansible_user via group_vars/distro_*.yml,
+  # which must equal the admin_username Terraform gave the VM (compute-linux
+  # var.admin_usernames). Amazon Linux was removed; there is no distro_amazon.
+  - key: tags.Distro | default('')
+    prefix: distro
+    separator: "_"
+  # OSVersion: RHEL 8 | 9 | 10, SLES 15 | 16. Only RHEL and SLES carry it.
+  #   --limit 'role_web:&osver_8'
+  - key: tags.OSVersion | default('')
+    prefix: osver
+    separator: "_"
+  # Role: the primary playbook selector (role_web, role_db, role_dc, ...).
+  - key: tags.Role | default('')
+    prefix: role
+    separator: "_"
+  - key: tags.Environment | default('')
+    prefix: env
+    separator: "_"
+  # APPLICATION ENVIRONMENT RING -> appenv_prod, appenv_uat, appenv_dev, plus
+  # appenv_shared for the bastion and control node in the ring-fenced estate.
+  #
+  # A second environment axis. `Environment` is the ESTATE's identity (every
+  # host this control node can see shares one value, so env_* is a group of
+  # everything). `AppEnv` is the ring WITHIN an estate, set only by
+  # deployments/multi-environment-ring-fencing. Hosts without it join no
+  # appenv_* group, so this entry is inert in the other deployments.
+  #     --limit 'role_web:&appenv_prod'     one ring's web tier
+  #     --limit 'appenv_dev'                one whole ring
+  - key: tags.AppEnv | default('')
+    prefix: appenv
+    separator: "_"

@@ -1,0 +1,256 @@
+---
+# Prepare the database host for the service desk: config drop-in, schema,
+# and an application account scoped to this schema only.
+#
+# The TABLES are not created here — the app role does that, because it has the
+# venv, PyMySQL and schema.sql. This role owns the server-side concerns: what
+# the server listens on, what the database is called, and who may connect.
+
+- name: Detect which MySQL-family unit this host runs # noqa command-instead-of-module
+  # A read-only existence check. The service module would try to START the unit,
+  # which is exactly what must not happen before we know it is installed.
+  ansible.builtin.command: "systemctl cat {{ item }}.service"
+  register: sd_db_units
+  changed_when: false
+  failed_when: false
+  loop:
+    - mysql
+    - mariadb
+
+- name: Record the unit, config directory and socket for this family
+  ansible.builtin.set_fact:
+    # Oracle MySQL on Ubuntu is 'mysql'; everything else in this estate is
+    # 'mariadb'. Probed rather than mapped from the distro, for the same reason
+    # the Python interpreter is probed: a map is wrong the moment an image changes.
+    sd_db_unit: "{{ 'mysql' if sd_db_units.results[0].rc == 0 else 'mariadb' }}"
+    sd_db_confdir: >-
+      {{ sd_db_confdir_mysql_debian
+         if sd_db_units.results[0].rc == 0
+         else (sd_db_confdir_mariadb_redhat if ansible_facts['os_family'] == 'RedHat'
+               else sd_db_confdir_mariadb_suse if ansible_facts['os_family'] == 'Suse'
+               else sd_db_confdir_mariadb_debian) }}
+    sd_db_socket: >-
+      {{ sd_db_socket_debian
+         if ansible_facts['os_family'] == 'Debian'
+         else (sd_db_socket_redhat if ansible_facts['os_family'] == 'RedHat'
+               else sd_db_socket_suse) }}
+
+- name: Fail with an actionable message when no MySQL-family server is installed
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} is the service desk database host but has neither
+      mysql.service nor mariadb.service. Run the matching distro playbook first
+      (playbooks/ubuntu-mysql.yml for this deployment), or point sd_db_group /
+      sd_db_distro_group at a different host in vars/servicedesk.yml.
+  when:
+    - sd_db_units.results[0].rc != 0
+    - sd_db_units.results[1].rc != 0
+
+# community.mysql needs a Python MySQL client ON THE MANAGED HOST. ubuntu-mysql.yml
+# installs python3-pymysql, but this role must stand alone, so the same
+# best-effort-then-pip pattern the other DB roles use — the package is named
+# differently on every distro and is absent from some repos.
+- name: Check whether the Python MySQL client is importable
+  ansible.builtin.command: python3 -c "import pymysql"
+  register: sd_pymysql
+  changed_when: false
+  failed_when: false
+
+- name: Install a Python MySQL client from the distro repos (best effort)
+  ansible.builtin.package:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - python3-pymysql
+    - python3-PyMySQL
+  failed_when: false
+  when: sd_pymysql.rc != 0
+
+- name: Re-check the Python MySQL client
+  ansible.builtin.command: python3 -c "import pymysql"
+  register: sd_pymysql2
+  changed_when: false
+  failed_when: false
+  when: sd_pymysql.rc != 0
+
+- name: Install PyMySQL from pip as a last resort
+  ansible.builtin.pip:
+    name: PyMySQL
+    state: present
+    extra_args: "--break-system-packages"
+  failed_when: false
+  when:
+    - sd_pymysql.rc != 0
+    - sd_pymysql2.rc | default(1) != 0
+
+# WHY THE FILE IS CALLED zz- AND NOT 99-.
+#
+# MySQL's `!includedir` reads *.cnf in ASCII order and LAST SETTING WINS. Oracle
+# MySQL on Ubuntu ships /etc/mysql/mysql.conf.d/mysqld.cnf, which contains
+# `bind-address = 127.0.0.1`. '9' (0x39) sorts before 'm' (0x6d), so a file
+# named 99-servicedesk.cnf is read FIRST and mysqld.cnf then overwrites
+# bind-address straight back to loopback. The drop-in applied cleanly, the
+# server restarted, and it still listened on 127.0.0.1 only — which is exactly
+# the failure this role's own warning task reports.
+#
+# The MariaDB convention of numeric prefixes (50-server.cnf) does not transfer:
+# it works there only because every MariaDB drop-in is numbered. 'zz-' sorts
+# last in all four confdirs this role targets, numbered or not.
+- name: Remove the superseded numeric drop-in
+  ansible.builtin.file:
+    path: "{{ sd_db_confdir }}/99-servicedesk.cnf"
+    state: absent
+  notify: restart sd database
+
+- name: Install the service desk server configuration drop-in
+  ansible.builtin.template:
+    src: servicedesk.cnf.j2
+    dest: "{{ sd_db_confdir }}/{{ sd_db_dropin_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart sd database
+
+- name: Ensure the database server is running and enabled
+  ansible.builtin.service:
+    name: "{{ sd_db_unit }}"
+    state: started
+    enabled: true
+
+# Restart now if the drop-in changed, so the database and grants below are
+# created against the server that will actually be serving.
+- name: Apply the configuration change before touching schemas
+  ansible.builtin.meta: flush_handlers
+
+- name: Create the service desk database
+  community.mysql.mysql_db:
+    name: "{{ sd_db_name }}"
+    state: present
+    encoding: utf8mb4
+    collation: utf8mb4_unicode_ci
+    login_user: root
+    login_password: "{{ sd_mysql_root_password }}"
+    login_unix_socket: "{{ sd_db_socket }}"
+    check_implicit_admin: true
+  no_log: true
+
+- name: Create the application account, scoped to this schema only
+  community.mysql.mysql_user:
+    name: "{{ sd_db_user }}"
+    host: "{{ sd_db_client_pattern }}"
+    password: "{{ sd_db_password }}"
+    # mysql_native_password on purpose. MySQL 8 defaults new accounts to
+    # caching_sha2_password, which PyMySQL can only complete over a plaintext
+    # connection if the `cryptography` package is present — an extra dependency
+    # (and a compiled one on some distros) for zero benefit inside a VNet.
+    plugin: mysql_native_password
+    priv: "{{ sd_db_name }}.*:ALL"
+    state: present
+    login_user: root
+    login_password: "{{ sd_mysql_root_password }}"
+    login_unix_socket: "{{ sd_db_socket }}"
+    check_implicit_admin: true
+  no_log: true
+
+# --- remove accounts left behind by an earlier, wider pattern ------------------
+#
+# In MySQL the host pattern is PART OF THE ACCOUNT IDENTITY, so narrowing
+# sd_db_client_pattern does not edit the existing account — it creates a second
+# one and leaves the first in place with its original privileges. Two narrowings
+# have happened: web host -> middleware host when the tiers were split, and /16
+# -> /24 when the ring-fenced deployment made 10.90.% span prod, uat and dev.
+# Without this sweep an estate converged before either change keeps a live
+# `sdapp` account authorised from the wider range, and the tightening is
+# cosmetic.
+#
+# Scoped to sd_db_user alone, so it cannot touch root, mysql.sys or anything a
+# different lab created.
+- name: Find superseded accounts for this application user
+  community.mysql.mysql_query:
+    query: "SELECT host FROM mysql.user WHERE user = %s AND host <> %s"
+    positional_args:
+      - "{{ sd_db_user }}"
+      - "{{ sd_db_client_pattern }}"
+    login_user: root
+    login_password: "{{ sd_mysql_root_password }}"
+    login_unix_socket: "{{ sd_db_socket }}"
+    login_db: mysql
+  register: sd_db_stale_accounts
+  changed_when: false
+  no_log: true
+
+- name: Report the superseded accounts before removing them
+  # Outside no_log on purpose — host patterns are not secrets, and a silent DROP
+  # USER is exactly the kind of thing you want to find in the converge log later.
+  ansible.builtin.debug:
+    msg: >-
+      Removing {{ sd_db_stale_accounts.query_result[0] | length }} superseded
+      account(s) '{{ sd_db_user }}'@{{ sd_db_stale_accounts.query_result[0]
+      | map(attribute='host') | list }}; the current one is
+      '{{ sd_db_user }}'@'{{ sd_db_client_pattern }}'.
+  when: (sd_db_stale_accounts.query_result[0] | default([])) | length > 0
+
+- name: Remove the superseded accounts
+  community.mysql.mysql_user:
+    name: "{{ sd_db_user }}"
+    host: "{{ item.host }}"
+    state: absent
+    login_user: root
+    login_password: "{{ sd_mysql_root_password }}"
+    login_unix_socket: "{{ sd_db_socket }}"
+    check_implicit_admin: true
+  loop: "{{ sd_db_stale_accounts.query_result[0] | default([]) }}"
+  loop_control:
+    label: "{{ sd_db_user }}@{{ item.host }}"
+  no_log: true
+
+- name: Detect whether firewalld is active # noqa command-instead-of-module
+  # No module can ASK whether a unit is active without also trying to manage it.
+  # Ubuntu's ufw is inactive and firewalld may not be installed at all, so this
+  # must not assume. Skipping the probe is how a service ends up listening and
+  # silently unreachable, which looks exactly like an NSG problem.
+  ansible.builtin.command: systemctl is-active firewalld
+  register: sd_db_firewalld
+  changed_when: false
+  failed_when: false
+
+- name: Open the database port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ sd_db_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: sd_db_firewalld.stdout | trim == 'active'
+
+- name: Confirm the server is listening on a non-loopback address
+  ansible.builtin.shell: |
+    set -o pipefail
+    (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print $4}' | grep -E ':{{ sd_db_port }}$'
+  args:
+    executable: /bin/bash
+  register: sd_db_listen
+  changed_when: false
+  failed_when: false
+
+- name: Warn when the server is still bound to loopback only
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is listening only on loopback
+      ({{ sd_db_listen.stdout_lines | default([]) | join(', ') }}). The
+      middleware host will not be able to connect (it is the only tier that
+      tries), and every downstream symptom will look like a
+      NSG problem instead. {{ sd_db_confdir }}/{{ sd_db_dropin_name }}
+      sets bind-address = 0.0.0.0, so check, in this order: that a LATER-SORTING
+      file in {{ sd_db_confdir }} is not re-setting bind-address
+      (`grep -rn bind-address {{ sd_db_confdir }}` — last file alphabetically
+      wins), and that the server actually restarted
+      (`systemctl status {{ sd_db_unit }}`).
+  when: sd_db_listen.stdout_lines | default([]) | select('search', '^0.0.0.0:|^\\*:|^\\[::\\]:') | list | length == 0
+
+- name: Report what was prepared
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} ({{ ansible_facts['distribution'] }},
+      {{ sd_db_unit }}) serving `{{ sd_db_name }}` to
+      '{{ sd_db_user }}'@'{{ sd_db_client_pattern }}'; listening on
+      {{ sd_db_listen.stdout_lines | default(['unknown']) | join(', ') }}

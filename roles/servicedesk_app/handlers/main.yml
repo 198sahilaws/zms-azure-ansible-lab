@@ -1,0 +1,7 @@
+---
+- name: Restart the service desk
+  ansible.builtin.systemd:
+    name: servicedesk
+    state: restarted
+    daemon_reload: true
+  listen: restart servicedesk

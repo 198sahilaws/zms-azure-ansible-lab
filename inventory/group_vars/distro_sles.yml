@@ -1,0 +1,49 @@
+---
+# Connection + package settings for SLES 15 hosts (inventory group distro_sles,
+# keyed off the Distro tag Terraform sets).
+#
+# ansible_user is set directly here (and NOT in os_linux.yml) so the Distro group
+# is the single source of truth for the login user across the mixed estate — the
+# same pattern as distro_ubuntu / distro_rhel, with no reliance on
+# ansible_group_priority.
+#
+# 'ec2-user' is kept from AWS, but on Azure no account is baked into the image:
+# Terraform creates it (compute-linux var.admin_usernames["sles"]). Change both
+# together or SSH fails with publickey.
+ansible_user: ec2-user
+
+# COVERS BOTH RELEASES: SLES 15 SP7 and SLES 16 share this group, because zypper,
+# apache2, mariadb and samba behave the same on both. Hosts are additionally
+# placed in osver_15 / osver_16 (from the OSVersion tag) so a single release can
+# be targeted:
+#   ansible-playbook playbooks/sles-apache2.yml --limit 'role_web:&osver_16'
+# Inside a task prefer the fact over the group — it reflects what is installed
+# rather than what Terraform intended:
+#   when: ansible_facts['distribution_major_version'] | int >= 16
+#
+# KNOWN DIFFERENCE — SELinux. SLES 15 uses AppArmor; SLES 16 ships SELinux
+# enforcing by default. That does not affect apache2 or mariadb on default
+# paths, but a Samba share outside the standard directories needs an SELinux
+# context on SLES 16 (as on RHEL). See the note in playbooks/linux-fileshare.yml.
+
+# --- Base-repo-safe package overrides ---------------------------------------
+# The baseline role defaults to [htop, curl, vim], but on SLES 15 `htop` is NOT
+# in the base product — it ships in the SUSE Package Hub extension, which is not
+# enabled by default. Installing it would fail the baseline on every converge.
+#
+# These group_vars override the role defaults (role defaults are the lowest
+# precedence), keeping the SLES baseline to packages present in the base product.
+# If you enable Package Hub on these hosts you can drop these overrides:
+#   SUSEConnect --product PackageHub/15.7/x86_64
+baseline_linux_packages:
+  - curl
+  - vim
+  # chrony is listed explicitly because the baseline role only STARTS the
+  # chronyd service — it never installs it. That is safe on the Ubuntu image
+  # (which ships chrony), but must not be assumed here: a
+  # missing unit fails the task with "Could not find the requested service".
+  # The package task runs before the service task, so this guarantees ordering.
+  - chrony
+
+# Same reason: site.yml installs `linux_baseline_package | default('htop')`.
+linux_baseline_package: curl

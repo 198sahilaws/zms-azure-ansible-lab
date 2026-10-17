@@ -1,0 +1,59 @@
+---
+# Populate the service's own database with deterministic fake data.
+#
+# Idempotent by design: the seeder checks for existing rows and exits without
+# writing, so this runs on every converge and only does work the first time.
+#
+# ignore_errors, NOT failed_when: false. `failed_when: false` REWRITES the
+# result's `failed` flag to False, so every `zms_db_port is failed` guard below
+# silently evaluates False — the explanation never prints and the seeder runs
+# against a database that is not there. `ignore_errors` leaves `failed: true`
+# intact and merely continues, which is what these guards are written against.
+
+- name: Check that the database port is reachable from this host
+  ansible.builtin.wait_for:
+    host: "{{ zms_db_host }}"
+    port: 3306
+    timeout: 10
+    state: started
+  register: zms_db_port
+  ignore_errors: true
+  changed_when: false
+
+- name: Explain an unreachable database rather than failing on the seeder
+  ansible.builtin.debug:
+    msg: >-
+      SKIPPING SEED — {{ inventory_hostname }} cannot open a TCP connection to
+      {{ zms_db_host }}:3306. Almost always one of: playbooks/zms-app-db.yml has
+      not run yet, MariaDB is still bound to 127.0.0.1, or firewalld on the
+      database host is closed. The service will start regardless and report the
+      problem on /health.
+  when: zms_db_port is failed
+
+- name: Seed the database (no-op once populated)
+  ansible.builtin.command:
+    cmd: "{{ zms_app_root }}/venv/bin/python -m zmsapp.seed"
+    chdir: "{{ zms_app_root }}/src"
+  environment: "{{ zms_seed_environment }}"
+  register: zms_seed
+  changed_when: "'inserted' in zms_seed.stdout"
+  when: zms_db_port is not failed
+  vars:
+    zms_seed_environment:
+      ZMS_SERVICE: "{{ zms_service_name }}"
+      ZMS_DB_HOST: "{{ zms_db_host }}"
+      ZMS_DB_NAME: "{{ zms_service_spec.db_name }}"
+      ZMS_DB_USER: "{{ zms_app_db_user }}"
+      ZMS_DB_PASSWORD: "{{ zms_app_db_password }}"
+      ZMS_SEED_PRODUCTS: "{{ zms_app_seed_products }}"
+      ZMS_SEED_ORDERS: "{{ zms_app_seed_orders }}"
+      ZMS_SEED_RANDOM: "{{ zms_app_seed_random_seed }}"
+      PYTHONPATH: "{{ zms_app_root }}/src"
+  # Hides the environment dict above, which carries the database password — and
+  # unavoidably hides stdout/stderr too, so a real seeder failure arrives as
+  # "censored". Re-run with -e zms_debug_seed=true to see the actual error.
+  no_log: "{{ not (zms_debug_seed | default(false) | bool) }}"
+
+- name: Show what the seeder did
+  ansible.builtin.debug:
+    msg: "{{ zms_seed.stdout_lines | default(['skipped — database unreachable']) }}"

@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ZMS lab: one burst of service desk traffic to {{ sd_app_host }}:{{ sd_app_port }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as an unprivileged, existing account. The generator writes nothing to
+# disk and needs no privileges — it only opens outbound HTTP.
+User=nobody
+Group=nogroup
+Environment=SD_BASE_URL=http://{{ sd_app_host }}:{{ sd_app_port }}
+ExecStart=/usr/bin/python3 {{ sd_traffic_dir }}/sd-traffic.py --once
+SyslogIdentifier=sd-traffic
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

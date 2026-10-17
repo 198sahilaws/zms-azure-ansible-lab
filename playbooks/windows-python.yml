@@ -1,0 +1,41 @@
+---
+# Install Python on Windows from the public Chocolatey community feed.
+#
+#   ansible-playbook playbooks/windows-python.yml
+#   ansible-playbook playbooks/windows-python.yml --limit win-app01
+#   ansible-playbook playbooks/windows-python.yml -e python_version=3.12.4
+
+- name: Install Python on Windows
+  hosts: "{{ target | default('os_windows') }}"
+  ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
+  gather_facts: false
+  vars:
+    python_package: python3
+    python_version: ""        # leave empty for latest; pin e.g. 3.12.4
+  tasks:
+    # gather_facts is false here, so guard reachability explicitly — otherwise an
+    # unreachable host proceeds and fails hard on the registered py_ver variable.
+    - name: Probe WinRM reachability
+      ansible.windows.win_ping:
+      register: winrm_probe
+      failed_when: false
+      changed_when: false
+
+    - name: Skip hosts that are not reachable over WinRM
+      ansible.builtin.meta: end_host
+      when: winrm_probe.failed | default(false) or winrm_probe.unreachable | default(false)
+
+    - name: Install Python from the public Chocolatey community feed
+      chocolatey.chocolatey.win_chocolatey:
+        name: "{{ python_package }}"
+        version: "{{ python_version | default(omit, true) }}"
+        state: present
+
+    - name: Verify Python is on PATH
+      ansible.windows.win_command: python --version
+      register: py_ver
+      changed_when: false
+
+    - name: Show the installed Python version
+      ansible.builtin.debug:
+        var: py_ver.stdout

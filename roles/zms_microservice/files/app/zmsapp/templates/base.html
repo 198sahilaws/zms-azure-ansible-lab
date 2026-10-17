@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}ZMS Microservices Lab{% endblock %}</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1a1d21;
+    --muted: #656d76;
+    --line: #dfe3e8;
+    --accent: #2f5fd0;
+    --ok: #1a7f4b;
+    --ok-bg: #e6f4ec;
+    --warn: #92610a;
+    --warn-bg: #fdf3dd;
+    --bad: #b4232c;
+    --bad-bg: #fbe9ea;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --panel: #1c2024; --ink: #e8eaed; --muted: #9aa4af;
+      --line: #2c3238; --accent: #7aa2f7; --ok: #6ed09a; --ok-bg: #14301f;
+      --warn: #e3b341; --warn-bg: #332a12; --bad: #f2777a; --bad-bg: #331a1b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 14px 24px; display: flex; align-items: baseline; gap: 22px;
+    flex-wrap: wrap; position: sticky; top: 0; z-index: 5;
+  }
+  header .brand { font-weight: 650; letter-spacing: -0.01em; }
+  header .brand span { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  nav a {
+    color: var(--muted); text-decoration: none; margin-right: 18px;
+    padding-bottom: 2px; border-bottom: 2px solid transparent;
+  }
+  nav a:hover { color: var(--ink); }
+  nav a.active { color: var(--ink); border-bottom-color: var(--accent); }
+  main { max-width: 1180px; margin: 0 auto; padding: 26px 24px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 { font-size: 15px; margin: 30px 0 10px; text-transform: uppercase;
+       letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 22px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden;
+  }
+  .grid { display: grid; gap: 14px; }
+  .grid.k3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .grid.k4 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 2px; font-size: 15px; display: flex;
+             align-items: center; gap: 9px; justify-content: space-between; }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase;
+                letter-spacing: 0.06em; }
+  .kpi .value { font-size: 26px; font-weight: 620; letter-spacing: -0.02em;
+                margin-top: 3px; }
+  .badge {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px;
+    text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+  }
+  .badge.ok   { color: var(--ok);   background: var(--ok-bg); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); }
+  .badge.bad  { color: var(--bad);  background: var(--bad-bg); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px;
+       text-transform: uppercase; letter-spacing: 0.05em; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: rgba(127,127,127,0.055); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .wrap { overflow-x: auto; }
+  a.link { color: var(--accent); text-decoration: none; }
+  a.link:hover { text-decoration: underline; }
+  .alert { border-radius: 9px; padding: 11px 15px; margin-bottom: 16px;
+           border: 1px solid; font-size: 14px; }
+  .alert.bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad); }
+  .alert.ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok); }
+  .alert.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
+  form.inline { display: flex; gap: 9px; flex-wrap: wrap; align-items: center;
+                margin-bottom: 16px; }
+  input, select, button {
+    font: inherit; padding: 7px 11px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  button { background: var(--accent); color: #fff; border-color: transparent;
+           cursor: pointer; font-weight: 550; }
+  button:hover { filter: brightness(1.08); }
+  .pager { display: flex; gap: 10px; margin-top: 16px; align-items: center;
+           color: var(--muted); font-size: 13px; }
+  .hop { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 34px;
+           border-top: 1px solid var(--line); padding-top: 14px; }
+  dl.meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
+            margin: 12px 0 0; font-size: 13px; }
+  dl.meta dt { color: var(--muted); }
+  dl.meta dd { margin: 0; font-family: var(--mono); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">ZMS Storefront <span>microservices lab</span></div>
+  <nav>
+    <a class="link {% if request.path == '/' %}active{% endif %}" href="/">Dashboard</a>
+    <a class="link {% if request.path.startswith('/products') %}active{% endif %}" href="/products">Products</a>
+    <a class="link {% if request.path.startswith('/orders') %}active{% endif %}" href="/orders">Orders</a>
+    <a class="link {% if request.path.startswith('/new') %}active{% endif %}" href="/new">Place order</a>
+    <a class="link" href="/api/topology">Topology JSON</a>
+  </nav>
+</header>
+<main>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <div class="alert {{ 'bad' if category == 'error' else 'ok' }}">{{ message }}</div>
+  {% endfor %}
+{% endwith %}
+{% block body %}{% endblock %}
+<footer>
+  Every figure on this page was fetched over HTTP from a service on another host
+  and joined in memory. This process holds no database connection.
+</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,105 @@
+---
+# Join Windows machines to the AD domain alcor.co.in.
+#
+#   ansible-playbook playbooks/windows-domain-join.yml                 # all os_windows (except DCs)
+#   ansible-playbook playbooks/windows-domain-join.yml --limit win-app01
+#   ansible-playbook playbooks/windows-domain-join.yml -e target=role_web
+#   ansible-playbook playbooks/windows-domain-join.yml -e domain_dns_server=10.0.0.10
+#
+# Join credentials come from the single consolidated secret, resolved
+# field-scoped inline (see group_vars/all.yml), keys domain_join_username /
+# domain_join_password — an account with rights to add computers to the domain.
+# Set them in the deployment's secrets.auto.tfvars.
+
+- name: Join Windows hosts to AD domain alcor.co.in
+  hosts: "{{ target | default('os_windows') }}"
+  ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
+  gather_facts: true
+  vars:
+    ad_domain_name: alcor.co.in
+    # DC private IP, auto-discovered from the inventory (role_dc group; its
+    # inventory hostname IS the private IP). Required: AD join resolves the domain
+    # via SRV records (_ldap._tcp.dc._msdcs.<domain>) that only the DC's own DNS
+    # serves — Azure-provided DNS (168.63.129.16) does not have them, and
+    # deployments/adds builds no Azure Private DNS zone (one named alcor.co.in
+    # would shadow the DCs).
+    # Override with -e domain_dns_server=<ip> if the DC is outside this inventory.
+    domain_dns_server: "{{ (groups['role_dc'] | default([]) | first) | default('', true) }}"
+    # Optional: place the computer object in a specific OU, e.g.
+    #   ou_path: "OU=Servers,DC=alcor,DC=co,DC=in"
+    ou_path: ""
+    # Domain-join account from the single consolidated secret, resolved
+    # field-scoped inline (see group_vars/all.yml note).
+    domain_admin_user: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).domain_join_username | default('', true) }}
+    domain_admin_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).domain_join_password | default('', true) }}
+  tasks:
+    - name: Skip hosts that could not be reached (no facts gathered = unreachable)
+      ansible.builtin.meta: end_host
+      when: ansible_facts | length == 0
+
+    - name: Assert domain-join credentials are present in the consolidated secret
+      ansible.builtin.assert:
+        that:
+          - domain_admin_user | length > 0
+          - domain_admin_password | length > 0
+        fail_msg: >-
+          domain_join_username / domain_join_password are empty. Set
+          domain_join_username and domain_join_password in secrets.auto.tfvars.
+      no_log: true
+
+    # Every flavour of domain controller is PROMOTED by its own playbook
+    # (windows-adds / windows-adc / windows-rodc), each of which performs its own
+    # member join first. Joining them here as well is redundant and reboots the
+    # host an extra time mid-chain.
+    - name: Skip domain controllers, additional DCs and RODCs (promoted, not member-joined)
+      ansible.builtin.meta: end_host
+      when: "'role_dc' in group_names or 'role_adc' in group_names or 'role_rodc' in group_names"
+
+    - name: Fail early if no domain controller was discovered
+      ansible.builtin.assert:
+        that:
+          - domain_dns_server | length > 0
+        fail_msg: >-
+          No host in the role_dc group, so the DC's DNS address is unknown and the
+          domain join cannot resolve {{ ad_domain_name }}. Ensure windows_server_roles
+          includes a "dc" entry, or pass -e domain_dns_server=<ip>.
+
+    - name: Point DNS at the domain controller (needed to resolve the domain)
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers:
+          - "{{ domain_dns_server }}"
+
+    - name: Flush the DNS resolver cache so the new server is used immediately
+      ansible.windows.win_command: ipconfig /flushdns
+      changed_when: false
+
+    - name: Wait for the domain controller to serve LDAP
+      ansible.windows.win_wait_for:
+        host: "{{ domain_dns_server }}"
+        port: 389
+        timeout: 600
+        state: started
+
+    - name: Join the domain (reboots automatically on change)
+      microsoft.ad.membership:
+        dns_domain_name: "{{ ad_domain_name }}"
+        domain_admin_user: "{{ domain_admin_user }}"
+        domain_admin_password: "{{ domain_admin_password }}"
+        domain_ou_path: "{{ ou_path | default(omit, true) }}"
+        state: domain
+        reboot: true
+      register: join_result
+      until: join_result is succeeded
+      retries: 5
+      delay: 60
+
+    - name: Report membership result
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} -> {{ ad_domain_name }} (changed={{ join_result.changed }})"

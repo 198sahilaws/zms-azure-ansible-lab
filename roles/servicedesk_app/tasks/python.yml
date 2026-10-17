@@ -1,0 +1,69 @@
+---
+# Get a usable Python 3 onto the host, whatever the distro decided to ship.
+#
+# The app targets Ubuntu, where /usr/bin/python3 is 3.12 and this is trivial.
+# The probe is kept anyway so the role survives being repointed at another
+# distro: /usr/bin/python3 is 3.9 on RHEL 9 and 3.6 on SLES 15, and Flask
+# needs 3.8+. A distro -> interpreter variable map is wrong the moment an image
+# changes; asking the host is not.
+
+- name: Install Python and venv support (Debian family)
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-venv
+      - python3-pip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install Python and pip (RedHat family)
+  ansible.builtin.dnf:
+    name:
+      - python3
+      - python3-pip
+    state: present
+    # RHEL 9+ ships curl-minimal, which conflicts during dependency
+    # pulls. Same workaround the existing playbooks use.
+    allowerasing: true
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Install a modern Python (SUSE family, best effort)
+  community.general.zypper:
+    name:
+      - python311
+      - python311-pip
+    state: present
+  failed_when: false
+  when: ansible_facts['os_family'] == "Suse"
+
+- name: Select an interpreter that meets the minimum version
+  ansible.builtin.shell: |
+    set -e
+    for candidate in {{ sd_python_candidates | join(' ') }}; do
+      path="$(command -v "$candidate" 2>/dev/null || true)"
+      [ -n "$path" ] || continue
+      if "$path" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, {{ sd_python_min_minor }}) else 1)'; then
+        echo "$path"
+        exit 0
+      fi
+    done
+    exit 1
+  args:
+    executable: /bin/sh
+  register: sd_python_probe
+  changed_when: false
+  failed_when: false
+
+- name: Fail with an actionable message when no suitable interpreter exists
+  ansible.builtin.fail:
+    msg: >-
+      No Python >= 3.{{ sd_python_min_minor }} on {{ inventory_hostname }}
+      ({{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}).
+      Tried: {{ sd_python_candidates | join(', ') }}.
+  when: sd_python_probe.rc != 0
+
+- name: Record the chosen interpreter
+  ansible.builtin.set_fact:
+    sd_python: "{{ sd_python_probe.stdout | trim }}"

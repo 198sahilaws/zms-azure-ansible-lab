@@ -1,0 +1,43 @@
+---
+# Connection settings for the Windows estate (group 'os_windows', keyed off tag OS).
+ansible_connection: winrm
+# HTTPS listener created by Terraform's winrm-bootstrap.ps1 (Azure Run Command).
+ansible_port: 5986
+ansible_winrm_transport: ntlm     # 'kerberos' once domain-joined; not used in the lab
+# The listener uses a self-signed certificate and Ansible connects by private
+# IP, so validation must stay 'ignore'. A Key Vault certificate would not fix
+# that on its own: validating needs IP SANs and the issuing chain trusted on the
+# control node. Kept as on AWS (work-breakdown correction 7).
+ansible_winrm_server_cert_validation: ignore
+ansible_winrm_message_encryption: auto           # encrypt payload over NTLM/HTTP
+
+# ansible.cfg enables become globally with method 'sudo' (correct for Linux). That
+# is invalid on Windows — the exec wrapper rejects sudo ("set the become method to
+# runas"). Our win_* tasks connect as an administrator and need no escalation, so
+# turn become OFF for the Windows estate. (Set ansible_become_method: runas only if
+# a specific task truly needs to elevate a non-admin.)
+ansible_become: false
+
+# Credentials come from the single consolidated secret, resolved field-scoped and
+# inline (not via a global bundle var — see the note in group_vars/all.yml).
+# winrm_username equals the admin_username Terraform gave every Windows VM
+# (default zmsadmin). ansible_password is scrubbed from Ansible output and logs.
+#
+# `| default('', true)` like every other key, so an unpopulated secret degrades
+# the same way everywhere: the hosts come back unreachable (Windows plays carry
+# ignore_unreachable) instead of the whole play aborting on an undefined field.
+# On AWS these two were the only keys without it.
+ansible_user: >-
+  {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      vault_url=azure_keyvault_url, client_id=azure_client_id)
+      | from_json).winrm_username | default('', true) }}
+ansible_password: >-
+  {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+      vault_url=azure_keyvault_url, client_id=azure_client_id)
+      | from_json).winrm_password | default('', true) }}
+
+# DNS forwarders that every domain controller sets after promotion
+# (playbooks/tasks/azure-dns-forwarder.yml). 168.63.129.16 is the Azure
+# platform resolver. Empty list = root hints only, as on AWS.
+ad_dns_forwarders:
+  - 168.63.129.16

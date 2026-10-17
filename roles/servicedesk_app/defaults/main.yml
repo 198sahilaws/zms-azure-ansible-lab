@@ -1,0 +1,150 @@
+---
+# Defaults for servicedesk_app. Real values come from vars/servicedesk.yml,
+# loaded by the playbook with vars_files; these are last-resort fallbacks.
+#
+# ONE ROLE, TWO TIERS. This role installs the same payload on the middleware
+# host and on the web host; sd_tier decides which Flask app the unit runs, what
+# goes in the environment file, and which port it binds. It is the same pattern
+# as roles/zms_microservice, which is deployed four times with a different
+# ZMS_SERVICE each time — and the reason there is no separate
+# roles/servicedesk_middleware to keep in step with this one.
+#
+#   sd_tier: middleware   sdapp.api:app   owns MySQL, runs schema + seed, :8091
+#   sd_tier: web          sdapp.web:app   owns HTML, no credentials,      :8090
+#
+# Anything that must differ between the tiers belongs in sd_env_middleware /
+# sd_env_web below, never in a `when: sd_tier == ...` sprinkled through tasks.
+
+# The playbook always sets this. Defaulting to middleware rather than web is
+# deliberate: middleware is the tier that cannot be omitted, so a missing
+# sd_tier fails toward the more complete install and is caught by the health
+# check instead of silently deploying a frontend with nothing behind it.
+sd_tier: middleware
+
+sd_app_root: /opt/servicedesk
+sd_app_config_dir: /etc/servicedesk
+sd_app_log_dir: /var/log/servicedesk
+sd_app_user: sdapp
+sd_app_group_name: sdapp
+sd_app_name: ZMS Lab Service Desk
+sd_app_version: "2.0.0"
+sd_app_workers: 2
+
+# The web tier keeps 8090 — it is the estate's front door, and sd-traffic.py,
+# servicedesk-verify.yml and every runbook URL point at it. The middleware gets
+# a new port rather than reusing 8090 on a different host so that "which tier
+# answered me" is legible from the port number alone in a flow log.
+sd_app_port: 8090
+sd_middleware_port: 8091
+
+sd_listen_port: "{{ sd_middleware_port if sd_tier == 'middleware' else sd_app_port }}"
+
+# The two timeouts that decide WHICH TIER GETS BLAMED during a database outage.
+# Keep sd_http_timeout comfortably the larger of the two: the web tier must wait
+# long enough for the middleware to give up on MySQL and return its considered
+# 503. Invert them and the web tier times out first, reports the middleware as
+# unreachable, and the failure demo sends you to the wrong host.
+sd_http_timeout: 8.0 # web -> middleware, seconds
+sd_db_connect_timeout: 5 # middleware -> MySQL, seconds
+
+sd_db_name: servicedesk
+sd_db_port: 3306
+sd_db_user: sdapp
+sd_db_password: ""
+sd_db_host: ""
+
+sd_db_group: role_db
+sd_db_distro_group: distro_ubuntu
+sd_middleware_group: role_middleware
+sd_middleware_distro_group: distro_ubuntu
+
+# Fallbacks only. vars/servicedesk.yml defines both and, being a vars_file, wins
+# over these. They exist so the role does not blow up on an undefined variable if
+# it is ever run without that file — in which case the peer lookups simply are
+# not ring-scoped, which is correct for an estate that has no rings.
+sd_ring_group: ""
+sd_ring_peers: "{{ groups['all'] | default([]) }}"
+
+sd_seed_users: 40
+sd_seed_tickets: 500
+sd_seed_days: 90
+sd_seed_random: 20260901
+
+# Pure-Python wheels only, on purpose: nothing here compiles, so no host needs
+# gcc or python3-devel. That is why this is Flask and not FastAPI, and why the
+# DB account uses mysql_native_password rather than caching_sha2_password
+# (which would drag in `cryptography`).
+#
+# PyMySQL is installed on BOTH tiers even though the web tier never opens a
+# connection. Keeping one package list means the payload is byte-identical
+# across the two hosts, so re-pointing a host at the other tier is an env
+# change and a restart. sdapp.wsgi imports sdapp.api only when
+# SD_TIER=middleware, so the driver is never loaded on the web host.
+sd_app_pip_packages:
+  - Flask>=2.2,<4
+  - gunicorn>=21,<24
+  - PyMySQL>=1.0,<2
+
+sd_app_health_retries: 12
+sd_app_health_delay: 5
+
+sd_python_min_minor: 8
+sd_python_candidates:
+  - python3.13
+  - python3.12
+  - python3.11
+  - python3.10
+  - python3.9
+  - python3
+
+# --- environment -------------------------------------------------------------
+# Handed to the bootstrap/seed commands AND rendered into the systemd
+# EnvironmentFile. Defined once so the two cannot drift.
+
+sd_env_common:
+  SD_TIER: "{{ sd_tier }}"
+  # The port THIS tier listens on, so it differs per tier (8090 web, 8091
+  # middleware). Deliberately sd_listen_port and not sd_app_port: gunicorn's
+  # --bind in the unit template uses sd_listen_port too, and if these two ever
+  # named different variables they would drift the moment someone moved a port.
+  SD_APP_PORT: "{{ sd_listen_port }}"
+  SD_APP_NAME: "{{ sd_app_name }}"
+  # Not read by any Python module — it is here so the deployed version is
+  # greppable on the host (`grep SD_APP_VERSION /etc/servicedesk/servicedesk.env`)
+  # and so that bumping sd_app_version rewrites this file, which notifies the
+  # restart handler. Same role as ZMS_VERSION in roles/zms_microservice.
+  SD_APP_VERSION: "{{ sd_app_version }}"
+  # Non-secret, and the web tier names it in its error pages, so both get it.
+  SD_DB_NAME: "{{ sd_db_name }}"
+  PYTHONPATH: "{{ sd_app_root }}/src"
+
+# The credentials live here and only here. There is no SD_DB_PASSWORD in the
+# web tier's environment file at all — not an empty one, absent — so a
+# misconfigured web host fails to connect because it has no idea how to, which
+# is a much better failure than connecting with the wrong password.
+sd_env_middleware:
+  SD_DB_HOST: "{{ sd_db_host }}"
+  SD_DB_PORT: "{{ sd_db_port }}"
+  SD_DB_USER: "{{ sd_db_user }}"
+  SD_DB_PASSWORD: "{{ sd_db_password }}"
+  # Must stay BELOW sd_http_timeout on the web tier, or a database outage makes
+  # the web tier time out first and report the middleware as unreachable — the
+  # wrong tier gets blamed and the degradation demo teaches the wrong lesson.
+  # sdapp/config.py defaults this to 5 if absent; it is emitted explicitly so
+  # the relationship between the two timeouts is visible and tunable here
+  # rather than buried in Python.
+  SD_DB_CONNECT_TIMEOUT: "{{ sd_db_connect_timeout }}"
+  SD_SEED_USERS: "{{ sd_seed_users }}"
+  SD_SEED_TICKETS: "{{ sd_seed_tickets }}"
+  SD_SEED_DAYS: "{{ sd_seed_days }}"
+  SD_SEED_RANDOM: "{{ sd_seed_random }}"
+
+sd_env_web:
+  SD_MIDDLEWARE_URL: "http://{{ sd_middleware_host | default('', true) }}:{{ sd_middleware_port }}"
+  SD_HTTP_TIMEOUT: "{{ sd_http_timeout }}"
+
+# Kept on ONE line deliberately. Ansible only returns a native dict when the
+# value is a single bare {{ }} expression; folding it across lines with >- has
+# bitten people here before by yielding the string "{'SD_TIER': ...}", which
+# `environment:` then rejects with a type error three tasks later.
+sd_app_environment: "{{ sd_env_common | combine(sd_env_middleware if sd_tier == 'middleware' else sd_env_web) }}"

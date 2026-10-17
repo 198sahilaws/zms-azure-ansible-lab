@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+#
+# Drop-in for the ZMS microservices lab. Kept separate from the distro's own
+# my.cnf so a package upgrade cannot silently revert it.
+[mysqld]
+# THE SINGLE MOST COMMON LAB FAILURE. MariaDB on several distros listens only
+# on 127.0.0.1 out of the box, so a service on another host gets "Can't connect
+# to MySQL server" that looks exactly like an NSG or routing problem
+# and is neither.
+bind-address = 0.0.0.0
+port = {{ zms_app_db_port }}
+
+# THE SECOND MOST COMMON. Without this, every connection from an app host
+# triggers a reverse DNS lookup that may have no answer in the VNet, so connects take
+# seconds and time out under any load. Grants must then be by IP pattern, which
+# is what the '{{ zms_app_db_user }}'@'<subnet>.%' grants already are. The actual
+# patterns are derived per converge and deliberately NOT interpolated here: this
+# file notifies a MariaDB restart when it changes, and a comment that moves with
+# the app hosts' addresses would bounce the server for no reason. Run
+# `SELECT host FROM mysql.user WHERE user='{{ zms_app_db_user }}';` to see them.
+skip-name-resolve = 1
+
+# Four gunicorn workers opening a connection per request across three services
+# is nowhere near the default 151, but a lab is where you learn to set it.
+max_connections = 200

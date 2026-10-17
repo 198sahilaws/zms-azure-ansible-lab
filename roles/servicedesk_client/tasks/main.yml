@@ -1,0 +1,101 @@
+---
+# Install the traffic generator on the CLIENT host.
+#
+# No venv, no pip, no packages: the script is stdlib-only urllib, so the client
+# host stays a plain client with nothing but the Python Ubuntu already ships.
+
+- name: Resolve the application host from the inventory
+  # sd_ring_peers keeps this client pointed at the web tier in its OWN ring, and
+  # is a no-op in a single-ring estate — see vars/servicedesk.yml. It matters
+  # more here than anywhere else: a client aimed across the fence would generate
+  # nothing but timeouts, and the ring it was supposed to be exercising would
+  # look idle rather than broken.
+  ansible.builtin.set_fact:
+    sd_app_host: >-
+      {{ (groups[sd_app_group] | default([]))
+         | intersect(groups[sd_app_distro_group] | default([]))
+         | intersect(sd_ring_peers)
+         | first | default('', true) }}
+
+- name: Fail with an actionable message when no application host was discovered
+  ansible.builtin.fail:
+    msg: >-
+      No host is in both {{ sd_app_group }} and {{ sd_app_distro_group }}
+      {{ ('within ' ~ sd_ring_group) if sd_ring_group | default('', true) | length > 0 else '' }},
+      so there is nothing for the client to send traffic to. Deploy an Ubuntu
+      host with Role=web (deployments/web-app does this), or repoint
+      sd_app_group / sd_app_distro_group in vars/servicedesk.yml.
+  when: sd_app_host | length == 0
+
+- name: Create the generator directory
+  ansible.builtin.file:
+    path: "{{ sd_traffic_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the traffic generator
+  ansible.builtin.copy:
+    src: sd-traffic.py
+    dest: "{{ sd_traffic_dir }}/sd-traffic.py"
+    owner: root
+    group: root
+    mode: "0755"
+  register: sd_traffic_script
+
+- name: Install the generator unit
+  ansible.builtin.template:
+    src: sd-traffic.service.j2
+    dest: /etc/systemd/system/sd-traffic.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: sd_traffic_unit
+
+- name: Install the generator timer
+  ansible.builtin.template:
+    src: sd-traffic.timer.j2
+    dest: /etc/systemd/system/sd-traffic.timer
+    owner: root
+    group: root
+    mode: "0644"
+  register: sd_traffic_timer
+
+- name: Enable the generator timer
+  ansible.builtin.systemd:
+    name: sd-traffic.timer
+    state: >-
+      {{ 'restarted'
+         if (sd_traffic_script is changed or sd_traffic_unit is changed or sd_traffic_timer is changed)
+         else 'started' }}
+    enabled: true
+    daemon_reload: true
+  when: sd_traffic_enabled | bool
+
+- name: Stop the generator timer when disabled
+  ansible.builtin.systemd:
+    name: sd-traffic.timer
+    state: stopped
+    enabled: false
+  when: not (sd_traffic_enabled | bool)
+
+- name: Run one burst now so the first converge produces traffic immediately
+  ansible.builtin.command:
+    cmd: "/usr/bin/python3 {{ sd_traffic_dir }}/sd-traffic.py --once"
+  environment:
+    SD_BASE_URL: "http://{{ sd_app_host }}:{{ sd_app_port }}"
+  register: sd_traffic_run
+  changed_when: false
+  # The app may still be starting, or the web host may be down. Neither should
+  # fail the converge — the timer will pick it up on the next tick.
+  failed_when: false
+  when: sd_traffic_enabled | bool
+
+- name: Report the generator result
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} -> http://{{ sd_app_host }}:{{ sd_app_port }}
+      every {{ sd_traffic_interval }} (+ up to {{ sd_traffic_jitter }} jitter).
+      First burst: {{ sd_traffic_run.stdout_lines | default(['not run']) | length }} lines,
+      rc={{ sd_traffic_run.rc | default('n/a') }}

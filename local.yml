@@ -1,0 +1,12 @@
+---
+# ansible-pull compatibility shim.
+#
+# `ansible-pull` runs `local.yml` by default and limits the run to the local host,
+# so it can only self-configure the control node — it CANNOT push to the estate.
+# This repo is push-based: `site.yml` targets the managed hosts (os_linux /
+# os_windows). The intended automation is the systemd timers in `systemd/`
+# (ansible-estate.timer runs `ansible-playbook site.yml`).
+#
+# local.yml exists only so an accidental `ansible-pull` does not fail with
+# "Could not find or access 'local.yml'"; it just self-converges the control node.
+- import_playbook: bootstrap.yml

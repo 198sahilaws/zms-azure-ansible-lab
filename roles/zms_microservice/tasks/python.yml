@@ -1,0 +1,94 @@
+---
+# Get a usable Python 3 onto the host, whatever the distro decided to ship.
+#
+# THE PROBLEM THIS SOLVES. /usr/bin/python3 is 3.12 on Ubuntu 24.04, 3.9 on
+# RHEL 9, and 3.6 on SLES 15 — and Flask 2.2+ needs 3.8.
+# So the role cannot assume `python3`; it asks each host what it actually has
+# and, on SLES, installs a newer interpreter alongside the system one. The same
+# reason playbooks/rhel8-python-bootstrap.yml exists for RHEL 8.
+
+- name: Install Python and venv support (Debian family)
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-venv
+      - python3-pip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install Python and pip (RedHat family)
+  ansible.builtin.dnf:
+    name:
+      - python3
+      - python3-pip
+    state: present
+    # RHEL 9+ ships curl-minimal, which conflicts during dependency pulls.
+    # Same workaround the existing playbooks use.
+    allowerasing: true
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Install a modern Python (SUSE family, best effort)
+  community.general.zypper:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - python311
+    - python311-pip
+  register: zms_suse_python
+  failed_when: false
+  when: ansible_facts['os_family'] == "Suse"
+
+- name: Fall back to the system Python packages (SUSE family)
+  community.general.zypper:
+    name:
+      - python3
+      - python3-pip
+    state: present
+  failed_when: false
+  when:
+    - ansible_facts['os_family'] == "Suse"
+    - zms_suse_python is failed or (zms_suse_python.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length) > 0
+
+# Ask the host what it has rather than mapping distro -> interpreter in a
+# variable. A variable map is wrong the moment an image changes; this is not.
+- name: Select an interpreter that meets the minimum version
+  ansible.builtin.shell: |
+    set -e
+    for candidate in {{ zms_python_candidates | join(' ') }}; do
+      path="$(command -v "$candidate" 2>/dev/null || true)"
+      [ -n "$path" ] || continue
+      if "$path" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, {{ zms_python_min_minor }}) else 1)'; then
+        echo "$path"
+        exit 0
+      fi
+    done
+    exit 1
+  args:
+    executable: /bin/sh
+  register: zms_python_probe
+  changed_when: false
+  failed_when: false
+
+- name: Fail with an actionable message when no suitable interpreter exists
+  ansible.builtin.fail:
+    msg: >-
+      No Python >= 3.{{ zms_python_min_minor }} on {{ inventory_hostname }}
+      ({{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}).
+      Tried: {{ zms_python_candidates | join(', ') }}. Install one
+      (SLES: `zypper install python311 python311-pip`; RHEL 8:
+      `dnf install python3.11 python3.11-pip`) and converge again.
+  when: zms_python_probe.rc != 0
+
+- name: Record the chosen interpreter
+  ansible.builtin.set_fact:
+    zms_python: "{{ zms_python_probe.stdout | trim }}"
+
+- name: Report the interpreter in use
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} ({{ ansible_facts['distribution'] }}
+      {{ ansible_facts['distribution_major_version'] }}) will run
+      {{ zms_service_name }} on {{ zms_python }}
+  tags: [never, debug]

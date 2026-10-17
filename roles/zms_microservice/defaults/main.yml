@@ -1,0 +1,51 @@
+---
+# Defaults for the zms_microservice role.
+#
+# The playbooks pass zms_service_name / zms_service_spec per host; everything
+# else comes from vars/zms-app.yml, which the playbooks load with vars_files.
+# Values here are last-resort fallbacks so the role is runnable on its own.
+
+zms_app_root: /opt/zms-app
+zms_app_config_dir: /etc/zms-app
+zms_app_log_dir: /var/log/zms-app
+zms_app_user: zmsapp
+zms_app_group: zmsapp
+zms_app_version: "1.0.0"
+zms_app_workers: 2
+
+# Set by the calling playbook. Named here so `ansible-playbook --check` on a
+# fresh host produces a readable assertion rather than an undefined-variable
+# stack trace.
+zms_service_name: ""
+zms_service_spec: {}
+
+# Empty by default so a storefront-only run (which passes no database
+# credentials, because the storefront has none) cannot trip on an undefined
+# variable. The DB-backed playbooks always override it.
+zms_app_db_password: ""
+zms_app_db_user: zmsapp
+
+# Ring scoping. Overridden by vars/zms-app.yml when a playbook loads it; these
+# defaults keep the role usable standalone and make the intersect a no-op.
+zms_ring_group: ""
+zms_ring_peers: "{{ groups['all'] | default([]) }}"
+
+zms_app_health_retries: 12
+zms_app_health_delay: 5
+
+zms_app_generator_enabled: false
+zms_app_generator_interval: "1min"
+
+# Minimum interpreter the application needs. Flask 2.2+ requires 3.8; SLES 15
+# ships 3.6 as /usr/bin/python3, which is why the bootstrap below exists.
+zms_python_min_minor: 8
+
+# Interpreter candidates, tried newest first. The first one that exists AND
+# meets zms_python_min_minor wins.
+zms_python_candidates:
+  - python3.13
+  - python3.12
+  - python3.11
+  - python3.10
+  - python3.9
+  - python3

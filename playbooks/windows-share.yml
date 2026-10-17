@@ -1,0 +1,58 @@
+---
+# Create an SMB network share on Windows file servers.
+# Access is granted to share_read_principal (both share-level and NTFS read-only).
+# Default is the built-in "Authenticated Users" — every domain/local account that
+# has logged on, but NOT anonymous/guest (unlike "Everyone"). Override with a
+# specific AD group for least privilege, e.g. -e 'share_read_principal=ALCOR\Share-RO'.
+#
+#   ansible-playbook playbooks/windows-share.yml
+#   ansible-playbook playbooks/windows-share.yml -e share_name=software -e 'share_path=D:\Shares\software'
+#   ansible-playbook playbooks/windows-share.yml -e 'share_read_principal=ALCOR\FileShare-Readers'
+#   ansible-playbook playbooks/windows-share.yml --limit win-fs01
+
+- name: Create a read-only network share
+  # role_fileshare spans Linux and Windows — intersect with os_windows.
+  hosts: "{{ target | default('role_fileshare:&os_windows') }}"
+  ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
+  gather_facts: false
+  vars:
+    share_name: data
+    share_path: 'C:\Shares\{{ share_name }}'
+    share_description: Read-only file share managed by Ansible
+    # Who gets read access. Prefer a scoped AD group over broad built-ins.
+    share_read_principal: Authenticated Users
+  tasks:
+    # gather_facts is false here — guard reachability explicitly so an unreachable
+    # host is skipped cleanly instead of failing later tasks.
+    - name: Probe WinRM reachability
+      ansible.windows.win_ping:
+      register: winrm_probe
+      failed_when: false
+      changed_when: false
+
+    - name: Skip hosts that are not reachable over WinRM
+      ansible.builtin.meta: end_host
+      when: winrm_probe.failed | default(false) or winrm_probe.unreachable | default(false)
+
+    - name: Ensure the share directory exists
+      ansible.windows.win_file:
+        path: "{{ share_path }}"
+        state: directory
+
+    - name: Grant NTFS read to {{ share_read_principal }} on the folder
+      ansible.windows.win_acl:
+        path: "{{ share_path }}"
+        user: "{{ share_read_principal }}"
+        rights: ReadAndExecute
+        type: allow
+        state: present
+        inherit: ContainerInherit, ObjectInherit
+        propagation: None
+
+    - name: Create/Update the SMB share ({{ share_read_principal }} read-only)
+      ansible.windows.win_share:
+        name: "{{ share_name }}"
+        path: "{{ share_path }}"
+        description: "{{ share_description }}"
+        read: "{{ share_read_principal }}"
+        state: present

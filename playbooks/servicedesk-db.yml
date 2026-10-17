@@ -1,0 +1,121 @@
+---
+# Prepare the database host for the service desk.
+#
+#   ansible-playbook playbooks/servicedesk-db.yml
+#   ansible-playbook playbooks/servicedesk-db.yml -e target=10.191.10.20
+#
+# Creates the `servicedesk` database, the application account and the server
+# drop-in (bind-address, skip-name-resolve). The TABLES are created by
+# servicedesk-middleware.yml, which has the venv and schema.sql.
+#
+# Run before servicedesk-middleware.yml. The grant below is scoped to the
+# MIDDLEWARE host's /24, not the web host's, and in a ring-fenced estate to the
+# middleware host in THIS host's own ring — see sd_db_client_pattern.
+
+- name: Prepare the service desk database host
+  # Role AND distro intersection — role_db spans every distro in the estate, so
+  # a bare role group would try to prepare the SLES and RHEL MariaDB hosts too.
+  hosts: "{{ target | default(sd_db_group ~ ':&' ~ sd_db_distro_group) }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/servicedesk.yml
+  vars:
+    # Credentials resolved FIELD-SCOPED and inline (see group_vars/all.yml). Two
+    # separate lookups rather than one bound `secret` dict on purpose: binding
+    # the whole document would put the SSH private key and every other password
+    # in scope for this play, where one -vvv leaks all of them.
+    sd_mysql_root_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).mysql_root_password | default('', true) }}
+    # The dedicated app password. modules/secrets writes this key from
+    # servicedesk_db_password, so it exists in every estate built from this
+    # repo's Terraform — but it defaults to "" there, and an unset key resolves
+    # to '' here rather than erroring. Empty therefore means "operator did not
+    # set it", not "old estate", and we fall back to the root password with a
+    # warning below. The account is still NOT root even then (its grant is
+    # servicedesk.* only), but it can authenticate AS root, which is the part
+    # worth being noisy about.
+    sd_db_password_from_secret: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).servicedesk_db_password | default('', true) }}
+  pre_tasks:
+    - name: Skip hosts that are not part of the Debian/RedHat/Suse families we handle
+      ansible.builtin.meta: end_host
+      when: ansible_facts['os_family'] not in ['Debian', 'RedHat', 'Suse']
+
+    - name: Assert a database password is available
+      ansible.builtin.assert:
+        that:
+          - (sd_db_password_from_secret | length > 0) or (sd_mysql_root_password | length > 0)
+        fail_msg: >-
+          Neither servicedesk_db_password nor mysql_root_password is set in the
+          consolidated secret. Set servicedesk_db_password (and
+          mysql_root_password) in secrets.auto.tfvars (deployments/web-app or
+          deployments/multi-environment-ring-fencing) and re-apply, then
+          converge again.
+      no_log: true
+
+    - name: Resolve the effective application password and client pattern
+      ansible.builtin.set_fact:
+        sd_db_password: "{{ sd_db_password_from_secret if sd_db_password_from_secret | length > 0 else sd_mysql_root_password }}"
+        # A boolean, not a credential, so the warning task below can run outside
+        # no_log and actually be visible in the converge output.
+        sd_db_password_is_root: "{{ sd_db_password_from_secret | length == 0 }}"
+        # Grant the app account only from the MIDDLEWARE host's own /24 —
+        # changed from the web host when the tiers were split, because the web
+        # host no longer connects to MySQL at all and granting it access would
+        # quietly re-open the path this design closes.
+        #
+        # THREE octets, not two. A /16 was adequate while one estate held one
+        # copy of the app, but the ring-fenced estate puts prod, uat and dev in
+        # one 10.90.0.0/16 — so '10.90.%' would authorise DEV's middleware
+        # against PROD's database. The ring NSGs drop that packet, but a
+        # grant looser than the fence is a trap for whoever loosens the fence
+        # next. A /24 is exactly one tier's subnet in one ring.
+        #
+        # Derived from the discovered address rather than a hardcoded CIDR, so
+        # it is correct in every deployment (10.0/10.90/10.191/10.192) and
+        # survives an instance replacement: a replacement keeps its subnet even
+        # though it does not keep its address, which is also why this is not
+        # a /32.
+        #
+        # sd_ring_peers keeps this inside THIS db host's own ring — see the
+        # explanation in vars/servicedesk.yml. Without it a three-ring estate
+        # would derive every ring's grant from whichever middleware host sorted
+        # first, and two of the three grants would be for the wrong subnet.
+        sd_db_client_pattern: >-
+          {{ ((groups[sd_middleware_group] | default([]))
+              | intersect(groups[sd_middleware_distro_group] | default([]))
+              | intersect(sd_ring_peers)
+              | first
+              | default('10.0.0.0', true)).split('.')[0:3] | join('.') }}.%
+      no_log: true
+
+    - name: Warn when the app account is being given the MySQL root password
+      # Loud on purpose, and a warning rather than a failure: the lab must still
+      # converge for an operator who has not set the new variable yet. But this
+      # is a real weakening — 'sdapp' keeps its servicedesk.*-only grant, so it
+      # cannot do more THROUGH that account, while anyone who reads
+      # /etc/servicedesk/servicedesk.env on the middleware host now holds a
+      # credential that also authenticates as root@localhost on the db host.
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: servicedesk_db_password is empty in the consolidated secret, so
+          '{{ sd_db_user }}' is being created with the MySQL ROOT password. Set
+          servicedesk_db_password in secrets.auto.tfvars and re-apply to split
+          them. The role will rotate the account's password on the next converge.
+      when: sd_db_password_is_root | bool
+
+    - name: Show which subnet the grant will admit
+      # Deliberately outside the no_log above: the pattern is not a secret and
+      # it is the single most useful thing to see when the middleware cannot
+      # connect. An unexpectedly wide pattern here (10.0.0.% from the fallback)
+      # means the middleware host was not in the inventory when this ran.
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: granting '{{ sd_db_user }}'@'{{ sd_db_client_pattern }}'
+          {{ '(ring ' ~ sd_ring_group ~ ')' if sd_ring_group | length > 0 else '(single-ring estate)' }}
+  roles:
+    - servicedesk_db

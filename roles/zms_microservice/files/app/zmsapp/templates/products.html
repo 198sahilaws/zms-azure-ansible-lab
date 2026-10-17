@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Products — ZMS Microservices Lab{% endblock %}
+{% block body %}
+
+<h1>Products</h1>
+<p class="sub">
+  Name, SKU and price come from <strong>catalog-svc</strong>; stock comes from
+  <strong>inventory-svc</strong> on a different host and a different MariaDB
+  server. One bulk call each, joined here by product id.
+</p>
+
+{% if catalog_error %}
+  <div class="alert bad">
+    catalog-svc did not answer — there is nothing to list.
+    <span class="mono">{{ catalog_error }}</span>
+  </div>
+{% endif %}
+{% if stock_error %}
+  <div class="alert warn">
+    inventory-svc did not answer, so the stock columns are blank. The catalog
+    half of the page is unaffected. <span class="mono">{{ stock_error }}</span>
+  </div>
+{% endif %}
+
+<form class="inline" method="get" action="/products">
+  <input type="search" name="q" value="{{ q }}" placeholder="name, SKU or supplier">
+  <button type="submit">Search</button>
+  {% if q %}<a class="link" href="/products">clear</a>{% endif %}
+</form>
+
+<div class="panel wrap">
+  <table>
+    <thead>
+      <tr>
+        <th class="num">ID</th><th>SKU</th><th>Name</th><th>Category</th>
+        <th>Supplier</th><th class="num">Price</th>
+        <th class="num">On hand</th><th class="num">Available</th>
+        <th class="num">Sites</th><th>Flag</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="num mono">{{ r.id }}</td>
+        <td class="mono">{{ r.sku }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.category }}</td>
+        <td>{{ r.supplier }}</td>
+        <td class="num">{{ '%.2f'|format(r.price) }}</td>
+        <td class="num">{{ r.on_hand if r.on_hand is not none else '—' }}</td>
+        <td class="num">{{ r.available if r.available is not none else '—' }}</td>
+        <td class="num">{{ r.sites or '—' }}</td>
+        <td>
+          {% if not r.active %}<span class="badge bad">discontinued</span>
+          {% elif r.below_reorder %}<span class="badge warn">reorder</span>
+          {% elif r.available == 0 and r.available is not none %}<span class="badge warn">out of stock</span>
+          {% else %}<span class="badge ok">ok</span>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" style="color:var(--muted)">No products to show.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="pager">
+  {% if offset > 0 %}
+    <a class="link" href="/products?offset={{ [offset - limit, 0]|max }}{% if q %}&q={{ q }}{% endif %}">← previous</a>
+  {% endif %}
+  <span>{{ offset + 1 }}–{{ offset + rows|length }} of {{ total }}</span>
+  {% if offset + limit < total %}
+    <a class="link" href="/products?offset={{ offset + limit }}{% if q %}&q={{ q }}{% endif %}">next →</a>
+  {% endif %}
+</div>
+
+{% endblock %}

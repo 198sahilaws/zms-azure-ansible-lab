@@ -1,0 +1,71 @@
+---
+# Deploy the service desk MIDDLEWARE tier, create its tables and seed them.
+#
+#   ansible-playbook playbooks/servicedesk-middleware.yml
+#   ansible-playbook playbooks/servicedesk-middleware.yml -e sd_seed_tickets=2000
+#
+# Run AFTER servicedesk-db.yml and BEFORE servicedesk-web.yml. The database and
+# the application account must exist before the tables can be created, and the
+# web tier's health check is meaningless until something is listening on 8091.
+#
+# THIS IS THE ONLY PLAY THAT HANDLES THE DATABASE PASSWORD. Before the split,
+# servicedesk-app.yml looked the secret up and wrote it to the web host;
+# now the web host never sees it and servicedesk-web.yml performs no secret
+# lookup at all. That is the security half of the three-tier split, and it is
+# worth not undoing by "helpfully" adding the lookup back to the web play.
+#
+# Idempotent and safe hourly: the payload only redeploys when a file changes,
+# pip no-ops once the venv is built, CREATE TABLE IF NOT EXISTS is a no-op, and
+# the seeder exits without writing once tickets exist.
+
+- name: Deploy the service desk middleware tier
+  hosts: "{{ target | default(sd_middleware_group ~ ':&' ~ sd_middleware_distro_group) }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/servicedesk.yml
+  vars:
+    sd_tier: middleware
+    # Field-scoped inline lookups — see the note in servicedesk-db.yml.
+    sd_mysql_root_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).mysql_root_password | default('', true) }}
+    sd_db_password_from_secret: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).servicedesk_db_password | default('', true) }}
+  pre_tasks:
+    # The fallback order MUST match servicedesk-db.yml exactly. That play creates
+    # the account with whichever password it resolves; this one writes the same
+    # value into /etc/servicedesk/servicedesk.env. Diverge the two and the
+    # symptom is an access-denied from an account that demonstrably exists.
+    - name: Resolve the effective application password
+      ansible.builtin.set_fact:
+        sd_db_password: "{{ sd_db_password_from_secret if sd_db_password_from_secret | length > 0 else sd_mysql_root_password }}"
+        sd_db_password_is_root: "{{ sd_db_password_from_secret | length == 0 }}"
+      no_log: true
+
+    - name: Assert a database password is available
+      ansible.builtin.assert:
+        that:
+          - sd_db_password | length > 0
+        fail_msg: >-
+          No database password available. Set servicedesk_db_password (or at
+          minimum mysql_root_password) in secrets.auto.tfvars and re-apply so it
+          reaches the consolidated secret.
+      no_log: true
+
+    - name: Warn that this host is about to be given the MySQL root password
+      # This is the tier that actually STORES the credential, in
+      # /etc/servicedesk/servicedesk.env, so the warning belongs here as well as
+      # on the db host — the two plays can be run independently.
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: servicedesk_db_password is empty in the consolidated secret, so
+          /etc/servicedesk/servicedesk.env on {{ inventory_hostname }} will hold the
+          MySQL ROOT password rather than a dedicated application password. Set
+          servicedesk_db_password in secrets.auto.tfvars, re-apply, and re-run
+          servicedesk-db.yml before this play.
+      when: sd_db_password_is_root | bool
+  roles:
+    - servicedesk_app

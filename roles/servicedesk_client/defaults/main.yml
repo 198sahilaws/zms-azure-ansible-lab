@@ -1,0 +1,14 @@
+---
+sd_app_port: 8090
+sd_app_host: ""
+sd_traffic_enabled: true
+sd_traffic_interval: "2min"
+sd_traffic_jitter: "45s"
+sd_traffic_dir: /opt/servicedesk-traffic
+
+# Fallbacks only. vars/servicedesk.yml defines both and, being a vars_file, wins
+# over these. They exist so the role does not blow up on an undefined variable if
+# it is ever run without that file — in which case the peer lookup simply is not
+# ring-scoped, which is the correct behaviour for an estate that has no rings.
+sd_ring_group: ""
+sd_ring_peers: "{{ groups['all'] | default([]) }}"

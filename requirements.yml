@@ -1,0 +1,59 @@
+---
+# Collections required on the control node.
+# Install with: ansible-galaxy collection install -r requirements.yml
+#
+# Versions are capped below the next major to prevent surprise breaking changes
+# on reconverge. To fully freeze for reproducible builds, run
+#   ansible-galaxy collection list
+# and replace the ranges with the exact versions you validated.
+#
+# THE CONTROL NODE HAS TWO COLLECTION TREES. Know which one wins.
+#
+# The `ansible` PPA package installs the whole community bundle into
+#   /usr/lib/python3/dist-packages/ansible_collections
+# and ships versions NEWER than several caps here — observed on a live node:
+# community.mysql 5.0.2 (cap <4), community.general 13.4.0 (cap <12) on the AWS
+# node; the same PPA bundle also carries azure.azcollection 3.x. ansible.cfg sets
+#   collections_path = collections
+# so at RUNTIME /opt/control-repo/collections is searched first and the pinned
+# versions win. That is the intended behaviour and it is what actually happens.
+#
+# The trap is that `ansible-galaxy install` resolves "already installed" against
+# a WIDER set of paths than runtime searches. Anything the PPA already ships at
+# a satisfying version is skipped rather than placed in the repo tree — on that
+# same node ansible.posix 2.2.2, ansible.windows 3.8.0, microsoft.ad 1.12.1 and
+# chocolatey.chocolatey 1.6.0 were all "already installed, skipping" and exist
+# ONLY in the PPA tree. They load today because ansible-core falls back to the
+# dist-packages tree. But the day the PPA moves one of them past its cap here,
+# galaxy will still skip it and runtime will still load it, and the cap will
+# have quietly stopped meaning anything.
+#
+# So: if you raise or lower a cap, verify it took effect on the node rather than
+# assuming, with
+#   cd /opt/control-repo && ansible-galaxy collection list <name>
+# and check which directory heading the version is printed under.
+collections:
+  # azure_rm inventory + azure_keyvault_secret lookup. Replaces amazon.aws.
+  #
+  # Unlike amazon.aws it needs a large Python SDK set (its requirements.txt) in
+  # the interpreter that runs ansible-playbook. The PPA bundle usually already
+  # ships a satisfying version, so galaxy skips it and the copy that loads is the
+  # one in /usr/lib/python3/dist-packages — which is why scripts/reconverge.sh
+  # finds the requirements file wherever the collection actually lives instead
+  # of assuming the repo tree, and installs it only when an import check fails.
+  - name: azure.azcollection
+    version: ">=3.0.0,<5.0.0"
+  - name: ansible.windows       # win_* core modules
+    version: ">=2.0.0,<4.0.0"
+  - name: microsoft.ad          # AD DS forest/domain promotion (windows-adds)
+    version: ">=1.0.0,<2.0.0"
+  - name: community.windows     # extended Windows modules
+    version: ">=2.0.0,<4.0.0"
+  - name: chocolatey.chocolatey
+    version: ">=1.4.0,<2.0.0"
+  - name: community.general
+    version: ">=7.0.0,<12.0.0"
+  - name: community.mysql      # MySQL modules (ubuntu-mysql)
+    version: ">=3.0.0,<4.0.0"
+  - name: ansible.posix        # profile_tasks callback (task timing in output)
+    version: ">=1.5.0,<3.0.0"

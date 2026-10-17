@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: baseline
+  author: zms-lab
+  description: Cross-platform baseline configuration for the ZMS Azure estate.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions: [all]
+    - name: EL
+      versions: [all]
+    - name: Windows
+      versions: [all]
+dependencies: []

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ZMS lab: fake order traffic every {{ zms_app_generator_interval }}
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ zms_app_generator_interval }}
+# Without this every host with the timer fires on the same second; jitter keeps
+# the demo looking like traffic rather than a cron job.
+RandomizedDelaySec=20
+Persistent=false
+
+[Install]
+WantedBy=timers.target

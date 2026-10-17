@@ -1,0 +1,96 @@
+---
+# Install MariaDB (MySQL-compatible) on SLES database servers.
+#
+#   ansible-playbook playbooks/sles-mariadb.yml
+#   ansible-playbook playbooks/sles-mariadb.yml --limit 10.188.10.51
+#
+# SLES 15 ships MariaDB in the base product (package + service both 'mariadb'),
+# so no external vendor repo is required — the same supply-chain principle as
+# rhel-mariadb.yml.
+
+- name: Install and enable MariaDB (SLES)
+  # Role AND distro intersection: only SLES DB hosts.
+  hosts: "{{ target | default('role_db:&distro_sles') }}"
+  gather_facts: true
+  vars:
+    # Root password from the single consolidated secret, resolved field-scoped
+    # inline (see inventory/group_vars/all.yml note). Empty (default) skips the
+    # root-password step.
+    mysql_root_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).mysql_root_password | default('', true) }}
+    mariadb_server_package: mariadb
+    # Candidate names for the Python MySQL client, tried in order. Absent names
+    # are tolerated; a pip fallback covers the case where none are available.
+    mysql_python_packages:
+      - python3-PyMySQL
+      - python3-pymysql
+    # SLES puts the MariaDB socket under /run/mysql. Override if your build differs.
+    mariadb_socket: /run/mysql/mysql.sock
+  tasks:
+    - name: Skip non-SUSE hosts
+      ansible.builtin.meta: end_host
+      when: ansible_facts['os_family'] != "Suse"
+
+    - name: Install the MariaDB server
+      community.general.zypper:
+        name: "{{ mariadb_server_package }}"
+        state: present
+
+    # The Python MySQL client that community.mysql needs is packaged under
+    # different names across distributions and is not guaranteed to be in the
+    # SLES base product. Try the known names best-effort, verify the module
+    # actually imports, and fall back to pip. (Same defensive pattern as
+    # rhel-mariadb.yml; on AWS a hard dependency on python3-PyMySQL failed the
+    # whole task on Amazon Linux and left MariaDB installed but unstarted.)
+    - name: Install a Python MySQL client from the distro repos (best effort)
+      community.general.zypper:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ mysql_python_packages }}"
+      register: mysql_py_rpm
+      failed_when: false
+
+    - name: Check whether the Python MySQL client is importable
+      ansible.builtin.command: python3 -c "import pymysql"
+      register: mysql_py_import
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure pip is available (only when no distro package provided the client)
+      community.general.zypper:
+        name: python3-pip
+        state: present
+      when: mysql_py_import.rc != 0
+
+    - name: Install PyMySQL from pip (fallback when no distro package exists)
+      ansible.builtin.pip:
+        name: PyMySQL
+        state: present
+      when: mysql_py_import.rc != 0
+
+    - name: Ensure mariadb is started and enabled at boot
+      ansible.builtin.service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Set the MariaDB root password (switch root from unix_socket to password auth)
+      community.mysql.mysql_user:
+        name: root
+        host: localhost
+        password: "{{ mysql_root_password }}"
+        # A fresh MariaDB root account uses the unix_socket plugin (the password
+        # is ignored). Force mysql_native_password so the supplied password
+        # actually authenticates.
+        plugin: mysql_native_password
+        login_unix_socket: "{{ mariadb_socket }}"
+        # Idempotent across reruns: try the implicit socket admin first (before
+        # the switch), then fall back to the password we just set.
+        check_implicit_admin: true
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        state: present
+      no_log: true
+      when: mysql_root_password | length > 0

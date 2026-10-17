@@ -1,0 +1,51 @@
+---
+# Install Apache and run it as a service on SLES web servers.
+# On SLES the package and the service are both named 'apache2' (as on Debian),
+# but it is installed with zypper, not apt.
+#
+#   ansible-playbook playbooks/sles-apache2.yml
+#   ansible-playbook playbooks/sles-apache2.yml --limit 10.188.10.50
+#   ansible-playbook playbooks/sles-apache2.yml -e target=distro_sles
+
+- name: Install and enable Apache2 (SLES)
+  # Role AND distro intersection: role_web spans Ubuntu, RHEL, SLES and
+  # Windows, so the intersection is required or Apache would be attempted on
+  # DB/client hosts and on non-SLES systems.
+  hosts: "{{ target | default('role_web:&distro_sles') }}"
+  gather_facts: true
+  tasks:
+    - name: Skip non-SUSE hosts
+      ansible.builtin.meta: end_host
+      when: ansible_facts['os_family'] != "Suse"
+
+    - name: Install Apache2
+      community.general.zypper:
+        name: apache2
+        state: present
+
+    - name: Ensure Apache2 is started and enabled at boot
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: true
+
+    # SLES 15 enables firewalld by default. Without this the web server installs
+    # and runs but is unreachable from other hosts — a silent functional failure
+    # that looks like a networking or NSG problem. The subnet NSG is the outer
+    # control; this opens the host firewall.
+    - name: Detect whether firewalld is active
+      ansible.builtin.command: systemctl is-active firewalld
+      register: sles_firewalld
+      changed_when: false
+      failed_when: false
+
+    - name: Open HTTP/HTTPS in firewalld
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - http
+        - https
+      when: sles_firewalld.stdout | trim == 'active'

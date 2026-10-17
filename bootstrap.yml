@@ -1,0 +1,96 @@
+---
+# The control node configuring itself (localhost). Run by scripts/reconverge.sh
+# from ansible-bootstrap.timer (every 30 min) and once at first boot by the
+# Terraform cloud-init. Keeps the control node's collections and SSH key
+# material current.
+#
+# reconverge.sh has already installed azure.azcollection's Python SDK set and
+# pywinrm before this runs. The Key Vault lookup below does not need the SDK at
+# all (with a managed identity it only uses `requests`), so writing the key
+# works even on a node whose SDK install failed; the inventory check at the end
+# is what exposes that.
+
+- name: Bootstrap the Ansible control node
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  vars:
+    ansible_key_dir: /etc/ansible/keys
+    # The systemd timers (ansible-bootstrap/ansible-estate) run ansible-playbook
+    # as this account, so it is the user that invokes ssh and must OWN and READ
+    # the private key. Root-owned 0600 would be unreadable by the ssh client.
+    ansible_service_user: ubuntu
+  tasks:
+    - name: Assert the consolidated secret name was provided
+      ansible.builtin.assert:
+        that:
+          - ansible_secret_name | length > 0
+          - azure_keyvault_name | length > 0
+        fail_msg: >-
+          ANSIBLE_SECRET_NAME or ANSIBLE_KEYVAULT_NAME is not set. Terraform's
+          control-node cloud-init writes both to /etc/ansible/estate.env, which
+          the systemd units load. For a manual run: sudo scripts/estate-shell.sh
+
+    - name: Ensure the Ansible key directory exists
+      ansible.builtin.file:
+        path: "{{ ansible_key_dir }}"
+        state: directory
+        owner: "{{ ansible_service_user }}"
+        group: "{{ ansible_service_user }}"
+        mode: "0700"
+
+    - name: Ensure the Ansible log directory exists (service user can write it)
+      ansible.builtin.file:
+        path: /var/log/ansible
+        state: directory
+        owner: "{{ ansible_service_user }}"
+        group: "{{ ansible_service_user }}"
+        mode: "0755"
+
+    - name: Install required collections
+      # Use the ansible-galaxy CLI directly so this does not depend on
+      # community.general already being installed — that is one of the very
+      # collections this task installs (chicken-and-egg on a bare ansible-core node).
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install --upgrade -r requirements.yml
+        chdir: "{{ playbook_dir }}"
+      register: galaxy_install
+      changed_when: "'Installing' in galaxy_install.stdout or 'Downloading' in galaxy_install.stdout"
+      become: false
+
+    # A 403 here means the control identity's "Key Vault Secrets User" role has
+    # not propagated yet (it can take a few minutes after the first apply). The
+    # timer retries every 30 minutes; nothing needs doing by hand.
+    - name: Write the Ansible SSH private key from the consolidated secret
+      ansible.builtin.copy:
+        content: >-
+          {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+              vault_url=azure_keyvault_url, client_id=azure_client_id)
+              | from_json).ssh_private_key | default('', true) }}
+        dest: "{{ ansible_ssh_private_key_file }}"
+        owner: "{{ ansible_service_user }}"
+        group: "{{ ansible_service_user }}"
+        mode: "0600"
+      no_log: true
+
+    # Checked after the write, from the file, so the key itself never becomes a
+    # registered variable. An unpopulated secret (populate_ansible_secret =
+    # false) would otherwise leave an empty key file and every SSH host
+    # unreachable with a misleading "Permission denied (publickey)".
+    - name: Verify the written key is a private key
+      ansible.builtin.command: ssh-keygen -y -f "{{ ansible_ssh_private_key_file }}"
+      register: key_check
+      changed_when: false
+      failed_when: key_check.rc != 0
+      no_log: true
+
+    # ANSIBLE_AZURE_VM_RESOURCE_GROUPS and the msi auth settings come from the
+    # environment (reconverge.sh exports them), so this sees exactly what the
+    # estate converge will see.
+    - name: Confirm the dynamic inventory resolves
+      ansible.builtin.command: ansible-inventory -i inventory/azure_rm.yml --graph
+      args:
+        chdir: "{{ playbook_dir }}"
+      changed_when: false
+      become: false

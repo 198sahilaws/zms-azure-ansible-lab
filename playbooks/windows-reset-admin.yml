@@ -1,0 +1,78 @@
+---
+# Re-sync the Windows local admin password to match the consolidated secret.
+#
+# Use this when WinRM auth fails with "ntlm: the specified credentials were
+# rejected by the server" because the account password on the VM has DRIFTED from
+# the secret. On Azure that is rarer than on AWS: changing windows_admin_password
+# in Terraform rebuilds the Windows VMs (admin_password is ForceNew), so the VM
+# and the secret normally move together. Drift now means the password was
+# changed on the VM itself (by hand, or by a domain policy after promotion).
+#
+# It connects over WinRM and sets the local admin account (winrm_username) to
+# winrm_password from the secret, so the normal secret-based creds work afterward.
+#
+#   # Normal case: the secret's creds still connect, you just want to enforce them
+#   ansible-playbook playbooks/windows-reset-admin.yml
+#
+#   # Drift case: the secret's password is REJECTED — connect with the currently
+#   # working password (extra-vars override the secret creds from group_vars):
+#   ansible-playbook playbooks/windows-reset-admin.yml \
+#       -e ansible_user='zmsadmin' -e ansible_password='<current-working-password>'
+#
+#   # One host only:
+#   ansible-playbook playbooks/windows-reset-admin.yml --limit 10.0.0.5 -e ...
+#
+# NOTE: a password cannot be compared (Windows won't expose the hash), so this
+# ENFORCES the password and reports 'changed' every run by design. It is a manual
+# recovery tool and is deliberately NOT part of orchestrate.yml.
+#
+# If even the current password is unknown, WinRM cannot be used at all — recover
+# out-of-band instead, from a workstation with az login:
+#   az vm user update -g <rg> -n <vm> -u zmsadmin -p '<password from the secret>'
+# (the VMAccess extension; not on a domain controller), or Run Command:
+#   az vm run-command invoke -g <rg> -n <vm> --command-id RunPowerShellScript \
+#     --scripts "net user zmsadmin '<password>'"
+# or rebuild the VM:
+#   terraform apply -replace='module.estate.module.windows.azurerm_windows_virtual_machine.this["client"]'
+
+- name: Re-sync Windows local admin password from the consolidated secret
+  hosts: "{{ target | default('os_windows') }}"
+  gather_facts: false
+  vars:
+    # Target account + password to ENFORCE, read field-scoped from the secret.
+    admin_user: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).winrm_username | default('', true) }}
+    admin_pass: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).winrm_password | default('', true) }}
+  tasks:
+    - name: Assert the target credentials were retrieved from the secret
+      ansible.builtin.assert:
+        that:
+          - admin_user | length > 0
+          - admin_pass | length > 0
+        fail_msg: >-
+          winrm_username / winrm_password are empty in the secret
+          '{{ ansible_secret_name }}'. Set windows_admin_username /
+          windows_admin_password in secrets.auto.tfvars.
+      no_log: true
+
+    - name: Enforce the local admin account, password, and Administrators membership
+      ansible.windows.win_user:
+        name: "{{ admin_user }}"
+        password: "{{ admin_pass }}"
+        password_never_expires: true
+        account_disabled: false
+        groups:
+          - Administrators
+        groups_action: add
+        update_password: always
+        state: present
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: local admin '{{ admin_user }}' password re-synced to the secret."

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ ticket.ref }} — {{ app_name }}{% endblock %}
+{% block content %}
+
+<p><a href="{{ url_for('index') }}">&larr; Back to queue</a></p>
+
+<div class="card">
+  <h2 style="margin:0 0 6px">
+    <span class="pri {{ ticket.priority }}">{{ ticket.priority }}</span>
+    {{ ticket.ref }} — {{ ticket.subject }}
+  </h2>
+  <p class="muted" style="margin:0">
+    <span class="badge">{{ ticket.status }}</span>
+    · {{ ticket.category }}
+    · raised by {{ ticket.requester }} ({{ ticket.requester_email }})
+    on {{ ticket.created_at.strftime('%Y-%m-%d %H:%M') }}
+    · assigned to {{ ticket.assignee or 'nobody' }}
+    {% if ticket.closed_at %} · closed {{ ticket.closed_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+  </p>
+  <p style="margin:14px 0 0">{{ ticket.body }}</p>
+</div>
+
+<div class="card">
+  <strong>{{ comments|length }} comment{{ '' if comments|length == 1 else 's' }}</strong>
+  {% for c in comments %}
+    <div class="comment {{ 'internal' if c.is_internal }}">
+      <div class="meta">
+        {{ c.author }} ({{ c.role }}) · {{ c.created_at.strftime('%Y-%m-%d %H:%M') }}
+        {% if c.is_internal %} · <strong>internal note</strong>{% endif %}
+      </div>
+      {{ c.body }}
+    </div>
+  {% else %}
+    <p class="muted">No comments yet.</p>
+  {% endfor %}
+</div>
+
+{% endblock %}

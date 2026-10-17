@@ -1,0 +1,51 @@
+---
+# Ensure RHEL 8 hosts have an ansible-supported Python interpreter.
+#
+# MUST RUN BEFORE ANY OTHER PLAYBOOK TOUCHES A RHEL 8 HOST — it is first in
+# orchestrate.yml and converge.sh for that reason.
+#
+# THE PROBLEM
+# RHEL 8's system Python is 3.6. ansible-core 2.17+ dropped Python 3.6 support on
+# managed nodes, and the control node runs 2.21. Without a newer interpreter,
+# every task against a RHEL 8 host fails immediately — including `setup` (fact
+# gathering), so even the usual "skip on wrong OS" guards never get to run.
+#
+# WHY `raw`
+# Every other Ansible module ships Python code to the target and executes it.
+# `raw` does not — it pipes a shell command over the connection. It is therefore
+# the only way to install Python on a host that has no usable Python yet. This is
+# the standard bootstrap pattern, not a workaround.
+#
+# gather_facts MUST be false here for the same reason: gathering facts requires
+# the very interpreter this playbook installs.
+#
+#   ansible-playbook playbooks/rhel8-python-bootstrap.yml
+#   ansible-playbook playbooks/rhel8-python-bootstrap.yml --limit 10.188.10.60
+
+- name: Bootstrap a supported Python interpreter on RHEL 8
+  hosts: "{{ target | default('osver_8') }}"
+  gather_facts: false
+  become: true
+  ignore_unreachable: true
+  vars:
+    # Must match ansible_python_interpreter in inventory/group_vars/osver_8.yml.
+    rhel8_python_package: python3.11
+    rhel8_python_path: /usr/bin/python3.11
+  tasks:
+    - name: Install a supported Python if the interpreter is missing
+      # Idempotent by construction: the install only runs when the binary is
+      # absent, so a converged host does a single cheap `command -v`.
+      ansible.builtin.raw: >-
+        command -v {{ rhel8_python_path }} >/dev/null 2>&1
+        || dnf install -y {{ rhel8_python_package }}
+      register: rhel8_py
+      changed_when: "'Installed:' in (rhel8_py.stdout | default(''))"
+
+    - name: Confirm the interpreter is now present
+      ansible.builtin.raw: "{{ rhel8_python_path }} --version"
+      register: rhel8_py_check
+      changed_when: false
+
+    - name: Report the interpreter in use
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ rhel8_py_check.stdout | default('') | trim }}"

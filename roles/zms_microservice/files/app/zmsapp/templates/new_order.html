@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Place an order — ZMS Microservices Lab{% endblock %}
+{% block body %}
+
+<h1>Place an order</h1>
+<p class="sub">
+  The write path. storefront → orders-svc → catalog-svc (validate and price) →
+  inventory-svc (reserve) → orders-svc writes its own row. Three databases,
+  three transactions, one saga.
+</p>
+
+{% if result %}
+  {% if result.ok %}
+    <div class="alert ok">
+      <strong>{{ result.data.order_ref }} placed.</strong>
+      Total {{ '%.2f'|format(result.data.total) }} ·
+      reserved at
+      {% for r in result.data.reservations %}{{ r.warehouse }}{% if not loop.last %}, {% endif %}{% endfor %}
+      · round trip {{ result.elapsed_ms }} ms.
+      <a class="link" href="/orders/{{ result.data.id }}">open the order →</a>
+    </div>
+  {% else %}
+    <div class="alert bad">
+      <strong>Order refused.</strong> <span class="mono">{{ result.error }}</span>
+      <div style="margin-top:6px">
+        Nothing partial was left behind: if stock had already been reserved for
+        an earlier line, orders-svc released it before returning this error.
+      </div>
+    </div>
+  {% endif %}
+{% endif %}
+
+{% if catalog_error %}
+  <div class="alert bad">
+    catalog-svc is unreachable, so there is no product list to choose from — and
+    orders-svc would refuse the order anyway rather than invent a price.
+    <span class="mono">{{ catalog_error }}</span>
+  </div>
+{% endif %}
+
+<div class="card" style="max-width:640px">
+  <form method="post" action="/new">
+    <div style="display:grid; gap:12px">
+      <label>Customer name<br>
+        <input name="customer_name" required style="width:100%" value="Ada Lovelace"></label>
+      <label>Customer email<br>
+        <input name="customer_email" type="email" required style="width:100%" value="ada@example.invalid"></label>
+      <label>Product<br>
+        <select name="product_id" style="width:100%">
+          {% for p in products %}
+            <option value="{{ p.id }}">{{ p.sku }} — {{ p.name }} ({{ '%.2f'|format(p.price) }})</option>
+          {% endfor %}
+        </select></label>
+      <label>Quantity<br>
+        <input name="qty" type="number" min="1" max="50" value="2" style="width:120px"></label>
+      <div><button type="submit" {% if not products %}disabled{% endif %}>Place order</button></div>
+    </div>
+  </form>
+</div>
+
+<h2>Worth trying</h2>
+<div class="card">
+  <p style="margin-top:0">
+    Pick a product the <a class="link" href="/products">products page</a> shows
+    as out of stock and order it. inventory-svc returns 409, orders-svc refuses,
+    and no order row is written — the failure is caught before anything is
+    committed anywhere.
+  </p>
+  <p style="margin-bottom:0">
+    Then stop inventory-svc entirely and try again: orders-svc gets a timeout
+    instead of a 409 and returns 503. Same refusal, different reason, and the
+    message above tells you which.
+  </p>
+</div>
+
+{% endblock %}

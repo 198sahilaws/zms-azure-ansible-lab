@@ -1,0 +1,62 @@
+---
+# Variables applied to every host in the estate.
+
+# Path where the Ansible SSH private key is written. bootstrap.yml writes it here
+# from the consolidated credentials secret (see the note at the bottom).
+# The Terraform keypair is RSA, so use a distro-neutral filename (not *_ed25519).
+ansible_ssh_private_key_file: /etc/ansible/keys/ansible_rsa
+
+# --- Contract 3: /etc/ansible/estate.env --------------------------------------
+# Terraform (modules/ansible-control cloud-init) writes these into estate.env;
+# the systemd units load it with EnvironmentFile=. The environment is the ONLY
+# channel: nothing is written into a vars file.
+#
+#   AZURE_LOCATION            region, informational (no lookup needs it)
+#   AZURE_SUBSCRIPTION_ID     used by the azure_rm inventory plugin directly
+#   AZURE_CLIENT_ID           the control node's user-assigned identity
+#   ANSIBLE_AZURE_AUTH_SOURCE msi (read by the inventory plugin directly)
+#   ANSIBLE_RESOURCE_GROUP    the estate boundary (see inventory/azure_rm.yml)
+#   ANSIBLE_KEYVAULT_NAME     the estate's vault
+#   ANSIBLE_SECRET_NAME       the consolidated secret inside it
+#   ANSIBLE_ESTATE            the Environment tag value
+#   ANSIBLE_ALERT_WEBHOOK_URL failure alerts (scripts/notify-result.sh)
+#   CONTROL_REPO_DIR          /opt/control-repo
+azure_location: "{{ lookup('ansible.builtin.env', 'AZURE_LOCATION') | default('', true) }}"
+azure_resource_group: "{{ lookup('ansible.builtin.env', 'ANSIBLE_RESOURCE_GROUP') | default('', true) }}"
+azure_keyvault_name: "{{ lookup('ansible.builtin.env', 'ANSIBLE_KEYVAULT_NAME') | default('', true) }}"
+
+# Key Vault data-plane URL. No trailing slash: the lookup appends /secrets/<name>.
+# Public cloud only; a sovereign cloud would need a different suffix.
+azure_keyvault_url: "https://{{ azure_keyvault_name }}.vault.azure.net"
+
+# Selects the user-assigned identity when the lookup asks IMDS for a token.
+# The control node has exactly one identity, so an empty value also works;
+# passing it keeps the lookup correct if a second identity is ever attached.
+azure_client_id: "{{ lookup('ansible.builtin.env', 'AZURE_CLIENT_ID') | default('', true) }}"
+
+# --- Consolidated Ansible credentials secret -----------------------------------
+# Terraform (modules/secrets) creates ONE Key Vault secret per estate, named
+# <prefix>-<env>-ansible-credentials-<suffix> (hyphens: Key Vault rejects the
+# AWS "/"), holding one JSON document with exactly ten keys:
+#   ssh_private_key, winrm_username, winrm_password, dsrm_password,
+#   domain_join_username, domain_join_password, mysql_root_password,
+#   servicedesk_db_password, samba_password, zms_app_db_password
+# The tenth key, zms_app_db_password, is new on Azure; on AWS the ZMS app
+# account silently shared the MariaDB root password.
+ansible_secret_name: "{{ lookup('ansible.builtin.env', 'ANSIBLE_SECRET_NAME') | default('', true) }}"
+
+# NOTE: the decrypted secret is deliberately NOT bound to a global variable here.
+# A single broadly-scoped `ansible_credentials` dict would put the SSH private key
+# and every password in scope for every play (and one stray `debug: var=...` or
+# `-vvv` dump would leak all of them). Instead each play resolves ONLY the field
+# it needs, inline and at the point of use:
+#   "{{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+#        vault_url=azure_keyvault_url, client_id=azure_client_id)
+#        | from_json).winrm_password | default('', true) }}"
+# See group_vars/os_windows.yml and the playbooks/*.yml vars blocks.
+#
+# Every field reference is a separate lookup: one IMDS token request plus one
+# Key Vault GET. That is the price of the convention, and it is well inside
+# Key Vault's throttling limits for an estate of this size. Authorisation is the
+# control identity's "Key Vault Secrets User" role on the vault; there is no
+# credential anywhere in this repo.

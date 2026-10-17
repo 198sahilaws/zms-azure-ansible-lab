@@ -1,0 +1,180 @@
+---
+# End-to-end check of the service desk, from the client host inward.
+#
+#   ansible-playbook playbooks/servicedesk-verify.yml
+#
+# DELIBERATELY NOT IN scripts/converge.sh OR orchestrate.yml. It ends in
+# asserts, so it would mark the ansible-estate unit failed during a deliberate
+# failure demo (stop MySQL, watch the app degrade). Run it by hand.
+#
+# EVERY CHECK IS MADE FROM THE CLIENT HOST, over the network, on the same ports
+# a user would use. That is the point: it exercises the NSGs, the
+# listeners and the cross-host hops, not just the processes.
+#
+# The chain under test is three hops long:
+#
+#   this host --:8090--> web --:8091--> middleware --:3306--> db
+#
+# so the asserts below walk it OUTSIDE-IN and name the leg that broke. The
+# order matters: a middleware outage also makes database.reachable false, so
+# the middleware leg is asserted first — otherwise a failure at hop two would
+# be reported as a database problem and send you to the wrong host.
+
+- name: Verify the service desk end to end
+  hosts: "{{ target | default(sd_client_group ~ ':&' ~ sd_client_distro_group) }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/servicedesk.yml
+  tasks:
+    - name: Resolve the web and middleware hosts
+      # Ring-scoped via sd_ring_peers (vars/servicedesk.yml), and this play is
+      # the reason that matters most. In a ring-fenced estate it runs once per
+      # ring — each ring's client verifies its own web and middleware and no
+      # others. Without the intersect, every ring's client would probe the same
+      # one web host, two of them across a fence they are not allowed to cross,
+      # and the run would report a broken application instead of a working fence.
+      ansible.builtin.set_fact:
+        sd_app_host: >-
+          {{ (groups[sd_app_group] | default([]))
+             | intersect(groups[sd_app_distro_group] | default([]))
+             | intersect(sd_ring_peers)
+             | first | default('', true) }}
+        sd_mw_host: >-
+          {{ (groups[sd_middleware_group] | default([]))
+             | intersect(groups[sd_middleware_distro_group] | default([]))
+             | intersect(sd_ring_peers)
+             | first | default('', true) }}
+
+    - name: Say which ring is being verified
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'ring ' ~ sd_ring_group if sd_ring_group | length > 0 else 'single-ring estate' }}:
+          client {{ inventory_hostname }} -> web {{ sd_app_host }} -> middleware {{ sd_mw_host }}
+
+    - name: Assert a web host exists
+      ansible.builtin.assert:
+        that: [sd_app_host | length > 0]
+        fail_msg: >-
+          No host in {{ sd_app_group }} & {{ sd_app_distro_group }}
+          {{ ('within ' ~ sd_ring_group) if sd_ring_group | length > 0 else '' }}.
+
+    - name: Assert a middleware host exists
+      ansible.builtin.assert:
+        that: [sd_mw_host | length > 0]
+        fail_msg: >-
+          No host in {{ sd_middleware_group }} & {{ sd_middleware_distro_group }}
+          {{ ('within ' ~ sd_ring_group) if sd_ring_group | length > 0 else '' }}.
+          deployments/web-app must include a host with role "middleware" in
+          linux_hosts, and the VM tag is case-sensitive: Role=middleware gives
+          role_middleware, Role=Middleware gives role_Middleware and matches
+          nothing.
+
+    - name: Fetch /health from the client host
+      ansible.builtin.uri:
+        url: "http://{{ sd_app_host }}:{{ sd_app_port }}/health"
+        return_content: true
+        status_code: [200, 503]
+      register: sd_v_health
+
+    - name: Assert the web tier can reach the middleware
+      ansible.builtin.assert:
+        that:
+          - sd_v_health.json.middleware.reachable
+        fail_msg: >-
+          The web tier answered but cannot reach the middleware at
+          {{ sd_v_health.json.middleware.url | default('<unset>') }}:
+          {{ sd_v_health.json.database.error | default('no detail') }}.
+          This is hop two, not the database — check that
+          servicedesk-middleware.yml ran and that gunicorn is listening on
+          {{ sd_mw_host }}:{{ sd_middleware_port }}.
+
+    - name: Assert the application reports a healthy database
+      ansible.builtin.assert:
+        that:
+          - sd_v_health.status == 200
+          - sd_v_health.json.database.reachable
+        fail_msg: >-
+          Service desk is degraded: {{ sd_v_health.json.database | default({}) }}.
+          The web and middleware tiers both answered, so this is the database
+          leg — check that servicedesk-db.yml ran, that MySQL is listening on
+          0.0.0.0, and that the grant covers the MIDDLEWARE host (it is scoped
+          to that host's /24, and no longer to the web host's). In a ring-fenced
+          estate the grant is derived per ring, so confirm the pattern on
+          {{ sd_mw_host }}'s database matches {{ sd_mw_host }} and not another
+          ring's middleware.
+
+    - name: Fetch /health directly from the middleware, bypassing the web tier
+      ansible.builtin.uri:
+        url: "http://{{ sd_mw_host }}:{{ sd_middleware_port }}/health"
+        return_content: true
+        status_code: [200, 503]
+      register: sd_v_mw_health
+
+    - name: Assert the middleware is healthy on its own port
+      ansible.builtin.assert:
+        that:
+          - sd_v_mw_health.status == 200
+          - sd_v_mw_health.json.tier == 'middleware'
+          - sd_v_mw_health.json.database.reachable
+        fail_msg: >-
+          The middleware is unhealthy when called directly on
+          {{ sd_mw_host }}:{{ sd_middleware_port }}:
+          {{ sd_v_mw_health.json | default('') }}.
+          If the previous asserts passed and this one did not, the two tiers
+          disagree — most likely SD_TIER is wrong in
+          {{ sd_app_config_dir }}/servicedesk.env on one of them.
+
+    - name: Assert the database actually holds seeded data
+      ansible.builtin.assert:
+        that:
+          - sd_v_health.json.database.tickets | int > 0
+        fail_msg: >-
+          The database is reachable but holds no tickets. Run
+          playbooks/servicedesk-middleware.yml (its seed step) or, to force a
+          reseed, ON THE MIDDLEWARE HOST {{ sd_mw_host }} — the web host has no
+          credentials and no venv module that can reach MySQL:
+          {{ sd_app_root }}/venv/bin/python -m sdapp.seed --force
+
+    - name: Fetch /stats
+      ansible.builtin.uri:
+        url: "http://{{ sd_app_host }}:{{ sd_app_port }}/stats"
+        return_content: true
+      register: sd_v_stats
+
+    - name: Assert tickets, comments and users are all populated
+      ansible.builtin.assert:
+        that:
+          - sd_v_stats.json.totals.tickets | int > 0
+          - sd_v_stats.json.totals.comments | int > 0
+          - sd_v_stats.json.totals.users | int > 0
+        fail_msg: "Incomplete seed data: {{ sd_v_stats.json.totals }}"
+
+    - name: Fetch the queue through the JSON API
+      ansible.builtin.uri:
+        url: "http://{{ sd_app_host }}:{{ sd_app_port }}/api/tickets?status=open&limit=5"
+        return_content: true
+      register: sd_v_queue
+
+    - name: Assert the open queue returns rows with joined user names
+      ansible.builtin.assert:
+        that:
+          - sd_v_queue.json | length > 0
+          - sd_v_queue.json[0].requester | length > 0
+        fail_msg: "The open queue returned nothing usable: {{ sd_v_queue.json | default('') }}"
+
+    - name: Run one traffic burst and confirm it succeeds
+      ansible.builtin.command:
+        cmd: "/usr/bin/python3 {{ sd_traffic_dir | default('/opt/servicedesk-traffic') }}/sd-traffic.py --once"
+      environment:
+        SD_BASE_URL: "http://{{ sd_app_host }}:{{ sd_app_port }}"
+      register: sd_v_traffic
+      changed_when: false
+
+    - name: Report the verified state
+      ansible.builtin.debug:
+        msg: >-
+          OK — {{ sd_app_host }}:{{ sd_app_port }} healthy;
+          {{ sd_v_stats.json.totals.tickets }} tickets,
+          {{ sd_v_stats.json.totals.comments }} comments,
+          {{ sd_v_stats.json.totals.users }} users;
+          traffic burst produced {{ sd_v_traffic.stdout_lines | length }} calls.

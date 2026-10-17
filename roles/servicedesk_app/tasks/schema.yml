@@ -1,0 +1,71 @@
+---
+# Create the tables, then put data in them. Two steps, two error messages: a
+# grant problem and a data problem look nothing alike and should not share one.
+#
+# ignore_errors, NOT failed_when: false.
+#
+# `failed_when: false` does not mean "tolerate the failure" — it REWRITES the
+# result so that `failed` is False. Every later `sd_db_reachable is failed` test
+# then evaluates False, the explanatory debug below never prints, and the two
+# guarded commands run unconditionally against a database that is not there and
+# hard-fail the converge. That is the exact opposite of what this file is for,
+# and it is silent: the play looks correctly written right up until it breaks.
+#
+# `ignore_errors: true` keeps `failed: true` on the result and merely continues,
+# which is what the guards below are written against.
+
+- name: Check that the database port is reachable from this host
+  ansible.builtin.wait_for:
+    host: "{{ sd_db_host }}"
+    port: "{{ sd_db_port }}"
+    timeout: 15
+    state: started
+  register: sd_db_reachable
+  ignore_errors: true
+  changed_when: false
+
+- name: Explain an unreachable database rather than failing the converge
+  ansible.builtin.debug:
+    msg: >-
+      SKIPPING schema and seed — {{ inventory_hostname }} cannot open a TCP
+      connection to {{ sd_db_host }}:{{ sd_db_port }}. Almost always one of:
+      playbooks/servicedesk-db.yml has not run yet, MySQL is still bound to
+      127.0.0.1 (check `grep -rn bind-address /etc/mysql/mysql.conf.d` on
+      {{ sd_db_host }} — the last file alphabetically wins), or a host firewall
+      is closed. The service will start anyway and report the problem on
+      /health, which is the point of that endpoint.
+  when: sd_db_reachable is failed
+
+# no_log hides the environment dict, which carries the database password. It
+# also hides stdout and stderr, so a genuine schema failure arrives as
+# "censored" and tells you nothing. Re-run with -e sd_debug_schema=true to see
+# the real error; the password is exposed in that run and only that run.
+- name: Create the tables (idempotent — CREATE TABLE IF NOT EXISTS)
+  ansible.builtin.command:
+    cmd: "{{ sd_app_root }}/venv/bin/python -m sdapp.bootstrap"
+    chdir: "{{ sd_app_root }}/src"
+  environment: "{{ sd_app_environment }}"
+  register: sd_bootstrap
+  changed_when: false
+  when: sd_db_reachable is not failed
+  no_log: "{{ not (sd_debug_schema | default(false) | bool) }}"
+
+- name: Show the schema result
+  ansible.builtin.debug:
+    msg: "{{ sd_bootstrap.stdout_lines | default(['skipped — database unreachable']) }}"
+
+- name: Seed the database (no-op once populated)
+  ansible.builtin.command:
+    cmd: "{{ sd_app_root }}/venv/bin/python -m sdapp.seed"
+    chdir: "{{ sd_app_root }}/src"
+  environment: "{{ sd_app_environment }}"
+  register: sd_seed
+  # Only a first run prints "inserted"; every later converge prints
+  # "already seeded" and must not report changed.
+  changed_when: "'inserted' in sd_seed.stdout"
+  when: sd_db_reachable is not failed
+  no_log: "{{ not (sd_debug_schema | default(false) | bool) }}"
+
+- name: Show what the seeder did
+  ansible.builtin.debug:
+    msg: "{{ sd_seed.stdout_lines | default(['skipped — database unreachable']) }}"

@@ -1,0 +1,29 @@
+[Unit]
+Description=Ansible estate converge (scripts/converge.sh)
+Wants=network-online.target
+# No After=ansible-bootstrap.service. After= only orders units inside ONE
+# transaction; two independently timed units are two transactions, so it was
+# inert on AWS and was removed in the 2026-10-15 fix pass. The real ordering is
+# the timers: estate starts 8 minutes after bootstrap at boot, and bootstrap
+# runs twice per estate interval.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/control-repo
+# Leading '-': see ansible-bootstrap.service.
+EnvironmentFile=-/etc/ansible/estate.env
+# Full estate convergence via the runner, which executes each playbook as its own
+# ansible-playbook process so ONE failing role cannot abort the whole chain
+# (import_playbook shares a single process and stops at "NO MORE HOSTS LEFT").
+# The runner still exits non-zero if anything failed, so this unit reports failure.
+# Blast-radius controls; see the arithmetic in scripts/converge.sh.
+Environment=ROLLING_BATCH=50%
+Environment=MAX_FAIL_PCT=20
+ExecStart=/bin/bash /opt/control-repo/scripts/converge.sh
+# DC promotion + reboots can take a while; allow up to an hour before systemd
+# kills the run.
+TimeoutStartSec=3600
+# Record result to /var/log/ansible and alert on failure.
+ExecStopPost=/bin/bash /opt/control-repo/scripts/notify-result.sh estate

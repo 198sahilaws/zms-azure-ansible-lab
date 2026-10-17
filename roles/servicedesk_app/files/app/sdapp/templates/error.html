@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  {% if failed_tier == 'middleware' %}
+    <h2 style="margin-top:0">Middleware unreachable</h2>
+    <p>The web tier is running but cannot reach the middleware tier, so it has
+      no way to answer this page. The database may be perfectly healthy — this
+      leg of the chain never got that far.</p>
+  {% elif failed_tier == 'database' %}
+    <h2 style="margin-top:0">Service degraded</h2>
+    <p>The middleware tier is running but cannot reach its database.</p>
+  {% else %}
+    <h2 style="margin-top:0">Not found</h2>
+  {% endif %}
+
+  <p class="muted">{{ detail }}</p>
+
+  {% if failed_tier %}
+  <p class="muted">
+    This page is a 503 on purpose. The request path is
+    <strong>web&nbsp;&rarr;&nbsp;middleware&nbsp;&rarr;&nbsp;MySQL</strong>, and the
+    heading above names the link that broke: stop MySQL and you get "service
+    degraded", stop the middleware unit and you get "middleware unreachable".
+    Every tier stays up and says what is wrong rather than returning a stack
+    trace.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

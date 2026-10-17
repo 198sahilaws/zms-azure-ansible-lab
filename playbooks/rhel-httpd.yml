@@ -1,0 +1,54 @@
+---
+# Install Apache HTTP Server and run it as a service on RHEL web servers.
+# Covers RHEL 8, 9 and 10 — the package and service are named 'httpd' on all
+# three (the Debian/SUSE name 'apache2' does not apply here).
+#
+#   ansible-playbook playbooks/rhel-httpd.yml
+#   ansible-playbook playbooks/rhel-httpd.yml --limit 'role_web:&osver_8'   # RHEL 8 only
+#   ansible-playbook playbooks/rhel-httpd.yml -e target=distro_rhel
+
+- name: Install and enable Apache (httpd) on RHEL
+  # Role AND distro intersection: role_web spans Ubuntu, SLES, RHEL and
+  # Windows, so the intersection is required or httpd would be attempted on
+  # DB/client hosts and on non-RHEL systems.
+  hosts: "{{ target | default('role_web:&distro_rhel') }}"
+  gather_facts: true
+  tasks:
+    - name: Skip non-RedHat-family hosts
+      ansible.builtin.meta: end_host
+      when: ansible_facts['os_family'] != "RedHat"
+
+    - name: Install Apache (httpd)
+      ansible.builtin.dnf:
+        name: httpd
+        state: present
+        # RHEL 9+ ships curl-minimal, which can conflict during dependency pulls
+        # Let dnf swap rather than fail.
+        allowerasing: true
+
+    - name: Ensure httpd is started and enabled at boot
+      ansible.builtin.service:
+        name: httpd
+        state: started
+        enabled: true
+
+    # RHEL may run firewalld (unlike Ubuntu, whose ufw is inactive). Without
+    # this the web server installs and runs but is unreachable from other hosts
+    # — a silent functional failure that looks like a networking or NSG problem.
+    # The subnet NSG is the outer control; this opens the host firewall.
+    - name: Detect whether firewalld is active
+      ansible.builtin.command: systemctl is-active firewalld
+      register: rhel_firewalld
+      changed_when: false
+      failed_when: false
+
+    - name: Open HTTP/HTTPS in firewalld
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - http
+        - https
+      when: rhel_firewalld.stdout | trim == 'active'

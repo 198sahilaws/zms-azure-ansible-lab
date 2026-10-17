@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ZMS lab: place one fake order through the public API
+After=zms-orders.service
+Wants=zms-orders.service
+
+[Service]
+Type=oneshot
+User={{ zms_app_user }}
+Group={{ zms_app_group }}
+WorkingDirectory={{ zms_app_root }}/src
+EnvironmentFile={{ zms_app_config_dir }}/{{ zms_service_name }}.env
+ExecStart={{ zms_app_root }}/venv/bin/python -m zmsapp.generator --once
+SyslogIdentifier=zms-order-generator
+NoNewPrivileges=true
+PrivateTmp=true

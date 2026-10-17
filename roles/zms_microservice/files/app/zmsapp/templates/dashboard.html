@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Topology — ZMS Microservices Lab{% endblock %}
+{% block body %}
+
+<h1>Estate topology</h1>
+<p class="sub">
+  {{ healthy }} of {{ total }} services reachable ·
+  fan-out completed in {{ fanout_ms }} ms with a {{ timeout }} s per-call timeout ·
+  storefront on <span class="mono">{{ identity.hostname }}:{{ identity.port }}</span>
+</p>
+
+{% if healthy < total %}
+<div class="alert warn">
+  <strong>Partial estate.</strong> {{ total - healthy }} service(s) are not
+  answering. This page renders anyway — that is the timeout and the per-service
+  error envelope doing their job. Pages that need the missing service will show
+  a dash rather than an error.
+</div>
+{% endif %}
+
+<div class="grid k3">
+  {% for s in services %}
+  <div class="card">
+    <h3>
+      {{ s.name }}-svc
+      {% if not s.reachable %}
+        <span class="badge bad">unreachable</span>
+      {% elif s.status == 'degraded' %}
+        <span class="badge warn">db down</span>
+      {% else %}
+        <span class="badge ok">healthy</span>
+      {% endif %}
+    </h3>
+    <div class="mono">{{ s.url or 'no endpoint configured' }}</div>
+
+    {% if s.reachable or s.status == 'degraded' %}
+    <dl class="meta">
+      <dt>App host</dt><dd>{{ s.hostname or '—' }} ({{ s.distro or '?' }})</dd>
+      <dt>Listening</dt><dd>{{ s.node_ip or '—' }}:{{ s.port or '—' }}</dd>
+      {% if s.database %}
+      <dt>Database</dt><dd>{{ s.database.name }} @ {{ s.database.host }} ({{ s.database.distro or '?' }})</dd>
+      {% endif %}
+      <dt>Latency</dt><dd>{{ s.latency_ms }} ms</dd>
+    </dl>
+    {% endif %}
+
+    {% if s.db_status and s.db_status != 'ok' %}
+      <div class="alert bad" style="margin-top:12px">
+        Database unreachable from this service:<br>
+        <span class="mono">{{ s.db_error }}</span>
+      </div>
+    {% endif %}
+
+    {% if not s.reachable %}
+      <div class="alert bad" style="margin-top:12px">
+        <span class="mono">{{ s.error }}</span>
+      </div>
+    {% endif %}
+
+    {% if s.stats %}
+      <div class="grid k4" style="margin-top:14px">
+        {% for key, value in s.stats.items() %}
+          {% if value is not mapping %}
+          <div class="kpi">
+            <div class="label">{{ key.replace('_', ' ') }}</div>
+            <div class="value">{{ value if value is not none else '—' }}</div>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% if s.stats.by_status %}
+        <div class="mono" style="margin-top:10px">
+          {% for k, v in s.stats.by_status.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}
+        </div>
+      {% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<h2>Request paths</h2>
+<div class="panel wrap">
+  <table>
+    <thead>
+      <tr><th>Page</th><th>Hops</th><th>Databases touched</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a class="link" href="/products">Products</a></td>
+        <td class="hop">browser → storefront → catalog-svc ⟂ inventory-svc (concurrent, one bulk call each)</td>
+        <td class="mono">zms_catalog + zms_inventory (2 servers)</td>
+      </tr>
+      <tr>
+        <td><a class="link" href="/orders">Orders</a></td>
+        <td class="hop">browser → storefront → orders-svc</td>
+        <td class="mono">zms_orders</td>
+      </tr>
+      <tr>
+        <td>Order detail</td>
+        <td class="hop">browser → storefront → orders-svc → catalog-svc ⟂ inventory-svc (second hop, different host)</td>
+        <td class="mono">all three</td>
+      </tr>
+      <tr>
+        <td><a class="link" href="/new">Place order</a></td>
+        <td class="hop">storefront → orders-svc → catalog (price) → inventory (reserve ×N) → orders writes locally; failure compensates</td>
+        <td class="mono">all three, three transactions, no distributed commit</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>Try breaking it</h2>
+<div class="card">
+  <p style="margin-top:0">
+    On the host running any one service:
+    <span class="mono">sudo systemctl stop zms-catalog</span>
+  </p>
+  <p style="margin-bottom:0">
+    Reload this page. The catalog card turns red, the other two keep their
+    numbers, and <a class="link" href="/products">Products</a> still lists rows
+    with a dash in the stock column instead of returning a 500. Start it again
+    and the estate heals with no other action — or wait for the next converge,
+    which starts it for you.
+  </p>
+</div>
+
+{% endblock %}

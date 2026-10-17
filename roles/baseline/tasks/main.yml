@@ -1,0 +1,21 @@
+---
+# Baseline role. OS-agnostic entry point that dispatches to the per-OS task
+# file. Hosts are already split into os_linux / os_windows groups by the
+# inventory, but dispatching here keeps the role usable on either play.
+# Guard on facts being DEFINED: an unreachable host (e.g. Windows with unsynced
+# WinRM creds) has no facts, and a bare `ansible_os_family` reference there throws
+# "'ansible_os_family' is undefined" — a hard failure that ignore_unreachable does
+# NOT catch, which would abort the whole converge. With `is defined`, such a host
+# simply skips both includes. (Using ansible_facts[...] also clears the
+# INJECT_FACTS_AS_VARS deprecation.)
+- name: Include Linux baseline tasks
+  ansible.builtin.include_tasks: linux.yml
+  when:
+    - ansible_facts['os_family'] is defined
+    - ansible_facts['os_family'] != "Windows"
+
+- name: Include Windows baseline tasks
+  ansible.builtin.include_tasks: windows.yml
+  when:
+    - ansible_facts['os_family'] is defined
+    - ansible_facts['os_family'] == "Windows"

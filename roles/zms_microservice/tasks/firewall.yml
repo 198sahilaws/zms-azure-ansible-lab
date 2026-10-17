@@ -1,0 +1,25 @@
+---
+# RHEL and SLES may run firewalld; Ubuntu's ufw is inactive. Detect, then act —
+# the same pattern playbooks/rhel-httpd.yml uses, and for the same reason:
+# without it the service starts, listens, and is silently unreachable, which
+# looks exactly like an NSG problem and wastes an afternoon.
+
+# noqa command-instead-of-module -- ansible.builtin.systemd cannot ASK whether a
+# unit is active without also trying to manage it, and firewalld may not be
+# installed at all. `systemctl is-active` with failed_when:false is the only
+# read-only probe that works on every distro (its consumer reads stdout, not
+# `failed`); it is the same idiom
+# playbooks/rhel-httpd.yml already uses.
+- name: Detect whether firewalld is active # noqa command-instead-of-module
+  ansible.builtin.command: systemctl is-active firewalld
+  register: zms_firewalld
+  changed_when: false
+  failed_when: false
+
+- name: Open the service port
+  ansible.posix.firewalld:
+    port: "{{ zms_service_spec.port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: zms_firewalld.stdout | trim == 'active'

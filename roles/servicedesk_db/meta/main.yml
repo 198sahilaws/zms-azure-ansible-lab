@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: servicedesk_db
+  description: Prepare a MySQL/MariaDB host for the ZMS lab service desk application.
+  author: ZMS Azure Lab
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

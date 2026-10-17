@@ -1,0 +1,36 @@
+---
+# ZMS microservices lab — STEP 3 of 3: deploy the web front end.
+#
+#   ansible-playbook playbooks/zms-app-frontend.yml
+#
+# The storefront is the same payload and the same role as the three services;
+# only its environment file differs — it gets the three service URLs and NO
+# database credentials at all. That is enforced by the mapping, not by trust:
+# zms_app_frontend has no db_distro_group, so the role writes no DB_* values
+# and the process has nothing to connect to.
+#
+# It runs on the SLES web host, which is the one distro in the estate whose
+# system python3 is too old for Flask — the role installs python311 alongside
+# it. That is deliberate: the awkward host is the one worth automating.
+#
+# Reach it through the Linux bastion with an SSH tunnel from your workstation
+# (connection-details.txt has the bastion address and key path):
+#   ssh -i <key>.pem -L 8080:<sles-web-private-ip>:8080 <bastion-user>@<bastion-ip>
+# then browse http://localhost:8080. The Windows bastion works too, when the
+# deployment builds one (create_windows_bastion).
+
+- name: Deploy the ZMS storefront (backend-for-frontend)
+  hosts: "{{ target | default('role_web') }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/zms-app.yml
+  pre_tasks:
+    - name: Skip hosts that are not the storefront's home
+      ansible.builtin.meta: end_host
+      when: zms_app_frontend.app_distro_group not in group_names
+  roles:
+    - role: zms_microservice
+      vars:
+        zms_service_name: "{{ zms_app_frontend.name }}"
+        zms_service_spec: "{{ zms_app_frontend }}"
+      tags: [zms-app, zms-app-frontend]

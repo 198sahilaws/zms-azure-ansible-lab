@@ -1,0 +1,23 @@
+---
+# RHEL 8 ONLY (inventory group osver_8, keyed off the OSVersion tag).
+#
+# WHY THIS FILE EXISTS
+# RHEL 8's system interpreter is Python 3.6 (/usr/bin/python3, and
+# /usr/libexec/platform-python). Modern ansible-core dropped support for Python
+# 3.6 on MANAGED NODES — the control node runs ansible-core 2.21, which needs
+# 3.8+ on the target. Left alone, every task against a RHEL 8 host fails before
+# it starts, including fact gathering.
+#
+# RHEL 9 (python 3.9) and RHEL 10 (python 3.12) are unaffected, which is why this
+# is scoped to osver_8 rather than distro_rhel.
+#
+# The interpreter below is installed by playbooks/rhel8-python-bootstrap.yml,
+# which uses `raw` (the only module that needs no Python on the target) and runs
+# FIRST in orchestrate.yml / converge.sh. Pointing at it here before it exists is
+# safe: raw ignores ansible_python_interpreter.
+ansible_python_interpreter: /usr/bin/python3.11
+
+# NOTE: ansible.cfg sets interpreter_python = auto_silent, whose discovery list
+# would find python3.11 on its own ONCE INSTALLED. The explicit setting is kept
+# so the choice is visible and cannot silently fall back to 3.6 if discovery
+# ordering changes.

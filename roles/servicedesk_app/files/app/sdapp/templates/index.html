@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="tiles">
+  <div class="tile"><div class="n">{{ stats.totals.tickets }}</div><div class="l">Tickets</div></div>
+  <div class="tile"><div class="n">{{ stats.totals.comments }}</div><div class="l">Comments</div></div>
+  <div class="tile"><div class="n">{{ stats.totals.users }}</div><div class="l">Users</div></div>
+  {% for p in priorities %}
+    {% if stats.open_by_priority.get(p) %}
+    <div class="tile">
+      <div class="n {{ p }}">{{ stats.open_by_priority.get(p) }}</div>
+      <div class="l">Open {{ p }}</div>
+    </div>
+    {% endif %}
+  {% endfor %}
+  {% if stats.open_by_sla and stats.open_by_sla.get('breached') %}
+  <div class="tile">
+    <div class="n P1">{{ stats.open_by_sla.get('breached') }}</div>
+    <div class="l">SLA breached</div>
+  </div>
+  {% endif %}
+  {% if stats.open_by_sla and stats.open_by_sla.get('at_risk') %}
+  <div class="tile">
+    <div class="n P2">{{ stats.open_by_sla.get('at_risk') }}</div>
+    <div class="l">SLA at risk</div>
+  </div>
+  {% endif %}
+</div>
+
+<nav class="filters">
+  <a href="{{ url_for('index', status='open', priority=priority) }}"
+     class="{{ 'on' if status == 'open' }}">Open queue</a>
+  {% for s in statuses %}
+    <a href="{{ url_for('index', status=s, priority=priority) }}"
+       class="{{ 'on' if status == s }}">{{ s }} ({{ stats.by_status.get(s, 0) }})</a>
+  {% endfor %}
+</nav>
+
+<nav class="filters">
+  <a href="{{ url_for('index', status=status) }}"
+     class="{{ 'on' if not priority }}">All priorities</a>
+  {% for p in priorities %}
+    <a href="{{ url_for('index', status=status, priority=p) }}"
+       class="{{ 'on' if priority == p }}">{{ p }}</a>
+  {% endfor %}
+</nav>
+
+<div class="wrap">
+<table>
+  <thead>
+    <tr><th>Ref</th><th>Pri</th><th>Subject</th><th>Status</th>
+        <th>Requester</th><th>Assignee</th><th>Comments</th><th>Raised</th>
+        <th>SLA</th></tr>
+  </thead>
+  <tbody>
+  {% for t in tickets %}
+    <tr>
+      <td><a href="{{ url_for('ticket_detail', ref=t.ref) }}">{{ t.ref }}</a></td>
+      <td class="pri {{ t.priority }}">{{ t.priority }}</td>
+      <td>{{ t.subject }}</td>
+      <td><span class="badge">{{ t.status }}</span></td>
+      <td>{{ t.requester }}</td>
+      <td class="{{ 'muted' if not t.assignee }}">{{ t.assignee or 'unassigned' }}</td>
+      <td>{{ t.comment_count }}</td>
+      <td class="muted">{{ t.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      {# SLA is computed by the middleware tier, never by SQL and never here. #}
+      <td class="sla {{ t.sla.state if t.sla else '' }}">
+        {%- if t.sla -%}
+          {{ t.sla.state.replace('_', ' ') }}
+          <span class="muted">({{ '%+.1f' | format(t.sla.remaining_hours) }}h)</span>
+        {%- else -%}
+          <span class="muted">—</span>
+        {%- endif -%}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="muted">No tickets match this filter.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% endblock %}

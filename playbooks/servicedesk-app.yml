@@ -1,0 +1,21 @@
+---
+# COMPATIBILITY ALIAS. The service desk is now three tiers, not two.
+#
+# This play used to install the whole application onto the Role=web host: HTML,
+# business logic, schema, seed and the database password, all in one place.
+# That work is now split across two plays and two hosts:
+#
+#   playbooks/servicedesk-middleware.yml   Role=middleware, :8091, owns MySQL
+#   playbooks/servicedesk-web.yml          Role=web,        :8090, owns HTML
+#
+# The file is kept because runbooks, muscle memory and the training guide all
+# say "servicedesk-app.yml", and a file-not-found is a worse answer than doing
+# the right thing. It imports both plays in the only valid order.
+#
+# scripts/converge.sh and orchestrate.yml list the two real plays, NOT this
+# one — importing it there as well would deploy everything twice per converge.
+#
+# Safe to delete once nothing refers to it.
+
+- ansible.builtin.import_playbook: servicedesk-middleware.yml
+- ansible.builtin.import_playbook: servicedesk-web.yml

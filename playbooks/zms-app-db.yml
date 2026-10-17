@@ -1,0 +1,77 @@
+---
+# ZMS microservices lab — STEP 1 of 3: prepare the MariaDB hosts.
+#
+#   ansible-playbook playbooks/zms-app-db.yml
+#   ansible-playbook playbooks/zms-app-db.yml --limit 10.0.10.6
+#   ansible-playbook playbooks/zms-app-db.yml --check --diff
+#
+# WHAT IT DOES. For every host in role_db that vars/zms-app.yml maps a schema
+# to: makes MariaDB listen on the VNet address, creates the schema, and creates
+# one application account scoped to that schema and to the app host's /24.
+#
+# WHICH HOSTS. On Azure, two database hosts: RHEL (zms_catalog and zms_orders —
+# the catalog schema moved here when Amazon Linux was removed) and SLES
+# (zms_inventory). An Ubuntu database host runs Oracle MySQL from
+# playbooks/ubuntu-mysql.yml and no schema is mapped to it, so it ends the play
+# untouched. That is a mapping decision in vars/zms-app.yml, not a special case
+# in this file.
+#
+# RUN ORDER. The distro MariaDB playbooks must have run first (they install the
+# server and set the root password); this playbook assumes mariadb.service
+# exists and fails with an explicit message if it does not.
+
+- name: Prepare the MariaDB hosts for the ZMS microservices
+  hosts: "{{ target | default('role_db') }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/zms-app.yml
+  vars:
+    # Field-scoped inline, per the note in inventory/group_vars/all.yml: never
+    # bind the whole credentials document to a variable.
+    zms_mysql_root_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).mysql_root_password | default('', true) }}
+    # The application account's own password: the tenth key in the
+    # consolidated secret, new on Azure (Terraform var.zms_app_db_password).
+    # On AWS there was no such key and the account silently shared the MariaDB
+    # root password, so anyone who read /etc/zms-app/<service>.env on an app
+    # host held root on that service's database host.
+    #
+    # The root-password fallback is kept ONLY for an estate whose secret leaves
+    # the key empty; the pre_task below says so loudly when it happens.
+    # Precedence, which zms-app-services.yml must match exactly:
+    #   -e zms_app_db_password_override  >  zms_app_db_password key  >  root
+    zms_app_db_password_from_secret: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).zms_app_db_password | default('', true) }}
+    zms_app_db_password: >-
+      {{ zms_app_db_password_override
+         | default(zms_app_db_password_from_secret, true)
+         | default(zms_mysql_root_password, true) }}
+  pre_tasks:
+    - name: Assert a database password is available
+      ansible.builtin.assert:
+        that:
+          - zms_app_db_password | length > 0
+        fail_msg: >-
+          No password available for the application account. Either
+          populate_ansible_secret is false in terraform.tfvars, or the
+          consolidated secret has neither zms_app_db_password nor
+          mysql_root_password. Set zms_app_db_password in secrets.auto.tfvars,
+          or pass -e zms_app_db_password_override='...' to proceed.
+        quiet: true
+
+    - name: Warn when the application account falls back to the root password
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: zms_app_db_password is empty in the consolidated secret, so
+          the zmsapp account is using the MariaDB ROOT password. Set
+          zms_app_db_password in secrets.auto.tfvars and re-apply Terraform.
+      when:
+        - zms_app_db_password_override | default('', true) | length == 0
+        - zms_app_db_password_from_secret | length == 0
+  roles:
+    - role: zms_app_db
+      tags: [zms-app, zms-app-db]

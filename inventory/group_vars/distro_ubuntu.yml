@@ -1,0 +1,9 @@
+---
+# Login user for Ubuntu hosts (inventory group distro_ubuntu, keyed off the Distro
+# tag Terraform sets). ansible_user is set directly here (and NOT in os_linux.yml)
+# so the Distro group is the single source of truth for the login user across a
+# mixed estate — no reliance on ansible_group_priority.
+#
+# Azure images have no built-in 'ubuntu' account: Terraform creates it
+# (compute-linux var.admin_usernames["ubuntu"]). Keep the two in step.
+ansible_user: ubuntu

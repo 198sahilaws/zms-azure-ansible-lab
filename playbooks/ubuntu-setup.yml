@@ -1,0 +1,66 @@
+---
+# Combined Ubuntu setup: full package update + install common packages.
+#
+# MAINTENANCE PLAYBOOK — deliberately NOT in orchestrate.yml. It runs a full
+# `apt upgrade dist` and may REBOOT the host, so it must not run unattended on
+# the hourly estate timer. Run it in a maintenance window, ideally with --limit.
+# Condenses ubuntu-update-packages, ubuntu-install-netcat and
+# ubuntu-install-packages into one playbook. Use tags to run a subset:
+#
+#   ansible-playbook playbooks/ubuntu-setup.yml                  # update + packages
+#   ansible-playbook playbooks/ubuntu-setup.yml --tags update    # upgrade only
+#   ansible-playbook playbooks/ubuntu-setup.yml --tags packages  # install only
+#   ansible-playbook playbooks/ubuntu-setup.yml --check --diff
+#   ansible-playbook playbooks/ubuntu-setup.yml -e rolling_batch=25%
+#   ansible-playbook playbooks/ubuntu-setup.yml -e '{"ubuntu_packages":["curl","wget","git"]}'
+
+- name: Update and provision Ubuntu servers
+  hosts: "{{ target | default('distro_ubuntu') }}"
+  gather_facts: true
+  serial: "{{ rolling_batch | default('100%') }}"
+  max_fail_percentage: "{{ max_fail_pct | default(0) }}"
+  vars:
+    ubuntu_packages:
+      - netcat-openbsd
+      - curl
+      - wget
+  tasks:
+    - name: Skip non-Debian hosts
+      ansible.builtin.meta: end_host
+      when: ansible_os_family != "Debian"
+
+    # --- Full package update -------------------------------------------------
+    - name: Update apt cache and perform a full upgrade
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+        upgrade: dist
+      tags: [update]
+
+    - name: Remove unused dependencies and clean the cache
+      ansible.builtin.apt:
+        autoremove: true
+        autoclean: true
+      tags: [update]
+
+    - name: Check whether a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+      tags: [update]
+
+    - name: Reboot if the upgrade requires it
+      ansible.builtin.reboot:
+        msg: Rebooting after package upgrade (managed by Ansible)
+        reboot_timeout: 600
+      when: reboot_required.stat.exists
+      tags: [update]
+
+    # --- Install common packages (netcat, curl, wget, ...) -------------------
+    - name: Install common packages
+      ansible.builtin.apt:
+        name: "{{ ubuntu_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [packages]

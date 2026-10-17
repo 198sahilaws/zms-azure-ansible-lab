@@ -1,0 +1,33 @@
+---
+# Connection settings for the Linux estate (group 'os_linux', keyed off tag OS).
+ansible_connection: ssh
+ansible_become: true
+ansible_become_method: sudo
+
+# The login user is set PER DISTRO, in inventory/group_vars/distro_ubuntu.yml
+# (ubuntu), distro_rhel.yml and distro_sles.yml (ec2-user). It is deliberately
+# NOT set here: defining ansible_user in os_linux too would create a same-level
+# group-var conflict that ansible_group_priority does not reliably resolve on
+# ansible-core 2.21 (on AWS os_linux won and every Linux host connected as
+# 'ubuntu', so the ec2-user hosts failed with publickey). With ansible_user
+# defined ONLY in the distro groups, the correct user always wins.
+#
+# On Azure the login user is whatever Terraform created: there is no image
+# default account. compute-linux var.admin_usernames must match these files.
+#
+# The ONE Linux host with no Distro tag is the Ansible control node (Role=
+# ansible-control, OS=linux). It joins os_linux, so site.yml's baseline
+# converges it too, connecting to itself over SSH by private IP. With no
+# ansible_user set, ssh uses the account running the play, which is ubuntu
+# (the systemd units run User=ubuntu, and Terraform's admin_username for the
+# control node is ubuntu). Do not add a fallback ansible_user here.
+
+# --- Private subnets / bastion (optional) ---------------------------------
+# If the control node cannot route directly to managed hosts, tunnel SSH
+# through a bastion by uncommenting the following and setting bastion_host.
+# Not needed in this lab: the control node sits in the management subnet and
+# every NSG keeps Azure's default AllowVnetInBound (and, in the ring-fenced
+# estate, an explicit allow from the shared /24s), so private addressing works.
+#
+# ansible_ssh_common_args: >-
+#   -o ProxyCommand="ssh -W %h:%p -q ubuntu@{{ bastion_host }}"

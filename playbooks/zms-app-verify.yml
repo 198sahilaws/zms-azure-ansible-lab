@@ -1,0 +1,135 @@
+---
+# ZMS microservices lab — end-to-end verification, run from the control node.
+#
+#   ansible-playbook playbooks/zms-app-verify.yml
+#
+# Proves the whole path rather than each piece: every service answers its own
+# health endpoint, orders-svc can reach its two dependencies FROM ITS OWN HOST
+# (a different question from whether the control node can reach them), and the
+# storefront's fan-out returns all three.
+#
+# Read-only. Safe to run at any time, including against a deliberately broken
+# estate — it reports which leg failed instead of aborting on the first one.
+
+- name: Verify the ZMS microservices estate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/zms-app.yml
+  tasks:
+    - name: Resolve every endpoint from the dynamic inventory
+      # Ring-scoped via zms_ring_peers, WITH A CAVEAT THIS PLAY CANNOT FIX BY
+      # ITSELF: it runs on localhost, and the control node carries no appenv_*
+      # group, so zms_ring_group resolves to '' and zms_ring_peers falls back to
+      # every host. In a single-copy estate that is exactly right. In an estate
+      # holding two or three copies of the topology it would verify a mixture of
+      # them, so name the ring explicitly:
+      #
+      #     ansible-playbook playbooks/zms-app-verify.yml -e zms_ring_group=appenv_prod
+      #
+      # -e outranks vars_files, and zms_ring_peers is derived from
+      # zms_ring_group at the point of use, so that one override scopes the
+      # whole play.
+      ansible.builtin.set_fact:
+        zms_targets: >-
+          {{ zms_targets | default([]) + [{
+               'name': item.key,
+               'host': (groups[zms_app_web_group] | default([])
+                        | intersect(groups[item.value.app_distro_group] | default([]))
+                        | intersect(zms_ring_peers)
+                        | first | default('')),
+               'port': item.value.port,
+               'db': item.value.db_name | default('')
+             }] }}
+      loop: "{{ (zms_app_services | dict2items) + [{'key': zms_app_frontend.name, 'value': zms_app_frontend}] }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Fail when an endpoint could not be resolved
+      ansible.builtin.assert:
+        that:
+          - zms_targets | rejectattr('host', 'equalto', '') | list | length == zms_targets | length
+        fail_msg: >-
+          Unresolved endpoints: {{ zms_targets | selectattr('host', 'equalto', '')
+          | map(attribute='name') | join(', ') }}
+          {{ ('within ring ' ~ zms_ring_group) if zms_ring_group | length > 0 else '' }}.
+          Check `ansible-inventory --graph` for the role_web and distro_* groups.
+        quiet: true
+
+    - name: Say what is being verified
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'ring ' ~ zms_ring_group if zms_ring_group | length > 0 else 'single-copy estate' }}:
+          {{ item.name }} @ {{ item.host }}:{{ item.port }}
+      loop: "{{ zms_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Probe every health endpoint
+      ansible.builtin.uri:
+        url: "http://{{ item.host }}:{{ item.port }}/health"
+        status_code: [200, 503]
+        timeout: 6
+        return_content: true
+      loop: "{{ zms_targets }}"
+      loop_control:
+        label: "{{ item.name }} -> {{ item.host }}:{{ item.port }}"
+      register: zms_probe
+      failed_when: false
+
+    - name: Ask orders-svc what IT can see (a different vantage point)
+      ansible.builtin.uri:
+        url: "http://{{ (zms_targets | selectattr('name', 'equalto', 'orders') | first).host }}:{{ zms_app_services.orders.port }}/dependencies"
+        timeout: 8
+        return_content: true
+      register: zms_deps
+      failed_when: false
+
+    - name: Ask the storefront for its topology view
+      ansible.builtin.uri:
+        url: "http://{{ (zms_targets | selectattr('name', 'equalto', zms_app_frontend.name) | first).host }}:{{ zms_app_frontend.port }}/api/topology"
+        timeout: 12
+        return_content: true
+      register: zms_topology
+      failed_when: false
+
+    - name: Health summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.name }} @ {{ item.item.host }}:{{ item.item.port }} —
+          {{ 'OK' if item.status == 200
+             else 'DEGRADED (process up, database unreachable)' if item.status == 503
+             else 'UNREACHABLE' }}
+          {%- if item.status == 503 %} :: {{ (item.content | from_json).database.error | default('') | truncate(160) }}{% endif %}
+          {%- if item.status not in [200, 503] %} :: {{ item.msg | default('no response') }}{% endif %}
+      loop: "{{ zms_probe.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Dependency view from the orders host
+      ansible.builtin.debug:
+        msg: >-
+          {{ (zms_deps.content | from_json).dependencies | default('orders-svc did not answer') }}
+
+    - name: Storefront fan-out
+      ansible.builtin.debug:
+        msg: >-
+          storefront saw
+          {{ (zms_topology.content | from_json).services | default([]) | selectattr('reachable') | list | length }}
+          of {{ zms_app_services | length }} services in
+          {{ (zms_topology.content | from_json).fanout_ms | default('?') }} ms
+      when: zms_topology.status | default(0) == 200
+
+    - name: Overall verdict
+      ansible.builtin.assert:
+        that:
+          - zms_probe.results | selectattr('status', 'equalto', 200) | list | length == zms_targets | length
+        fail_msg: >-
+          Estate is not fully healthy — see the summary above. Common causes, in
+          order: playbooks/zms-app-db.yml has not run; MariaDB still bound to
+          127.0.0.1; firewalld closed on the database host; the service unit
+          failed to start (journalctl -u zms-<name>).
+        success_msg: >-
+          All {{ zms_targets | length }} endpoints healthy. Storefront:
+          http://{{ (zms_targets | selectattr('name', 'equalto', zms_app_frontend.name) | first).host }}:{{ zms_app_frontend.port }}/

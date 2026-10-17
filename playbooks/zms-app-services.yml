@@ -1,0 +1,116 @@
+---
+# ZMS microservices lab — STEP 2 of 3: deploy the three microservices.
+#
+#   ansible-playbook playbooks/zms-app-services.yml
+#   ansible-playbook playbooks/zms-app-services.yml --limit 'role_web:&distro_rhel'
+#   ansible-playbook playbooks/zms-app-services.yml -e zms_app_version=1.0.1
+#
+# ONE PLAY, THREE SERVICES. The play targets role_web and each host works out
+# which services it runs from the distro groups it is in. On Azure that is
+# catalog AND inventory on the Ubuntu web host, orders on RHEL; the SLES web
+# host (the storefront's home) ends the play here. Moving a service to a
+# different host is an edit to vars/zms-app.yml and nothing else.
+#
+# A HOST CAN RUN MORE THAN ONE SERVICE. On AWS every service had a host of its
+# own and this play picked exactly one per host; with Amazon Linux gone the
+# Ubuntu web host carries two. The role still deploys ONE service per call, so
+# the play calls it once per assignment (include_role in a loop). The payload
+# and virtualenv are shared by the services on a host; each gets its own env
+# file, unit and port.
+#
+# Run playbooks/zms-app-db.yml first. If you do not, this still completes: the
+# services install and start, and the play fails at the health gate with a
+# message naming the database host it could not reach.
+#
+# ESTATES THAT DO NOT RUN THIS LAB. The topology spans three distros and five
+# hosts, so a single-distro estate (deployments/web-app builds Ubuntu only) has
+# no host for most of the map. That is a deployment choice, not a
+# misconfiguration, so a service whose mapped database distro is absent from
+# the estate entirely is SKIPPED. The hard failure in roles/zms_microservice is
+# kept for the case that really is a mistake: the distro group exists but no
+# host in it also carries Role=db.
+
+- name: Deploy the ZMS microservices
+  hosts: "{{ target | default('role_web') }}"
+  gather_facts: true
+  vars_files:
+    - ../vars/zms-app.yml
+  vars:
+    zms_mysql_root_password: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).mysql_root_password | default('', true) }}
+    zms_app_db_password_from_secret: >-
+      {{ (lookup('azure.azcollection.azure_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).zms_app_db_password | default('', true) }}
+    # MUST match the fallback order in zms-app-db.yml exactly — that play creates
+    # the account with whichever value it resolves, this one writes the same value
+    # into /etc/zms-app/<service>.env. See the note there.
+    zms_app_db_password: >-
+      {{ zms_app_db_password_override
+         | default(zms_app_db_password_from_secret, true)
+         | default(zms_mysql_root_password, true) }}
+  pre_tasks:
+    - name: Skip non-Linux hosts
+      ansible.builtin.meta: end_host
+      when: ansible_facts['system'] | default('') != 'Linux'
+
+    # Every service mapped to one of this host's distro groups, as a list of
+    # {key, value} items. On AWS this was a single set_fact in a loop, so a host
+    # matching two services silently kept only the last.
+    - name: Work out which microservices this host runs
+      ansible.builtin.set_fact:
+        zms_assignments: >-
+          {{ zms_app_services | dict2items
+             | selectattr('value.app_distro_group', 'in', group_names)
+             | list }}
+
+    # An estate that never built a SLES or RHEL host has no group for it in the
+    # dynamic inventory at all, so `not in groups` distinguishes "this lab does
+    # not apply here" from "the host exists but is mistagged".
+    - name: Split off services whose database distro is not deployed
+      ansible.builtin.set_fact:
+        zms_assignments_absent_db: >-
+          {{ zms_assignments
+             | selectattr('value.db_distro_group', 'defined')
+             | rejectattr('value.db_distro_group', 'in', groups | dict2items
+                          | selectattr('value', 'truthy') | map(attribute='key') | list)
+             | list }}
+
+    - name: Explain which parts of the lab this estate does not host
+      ansible.builtin.debug:
+        msg: >-
+          SKIPPING {{ item.key }} on {{ inventory_hostname }} — the ZMS
+          microservices lab maps its database to '{{ item.value.db_distro_group }}'
+          and this estate contains no host in that group. The lab spans the
+          Ubuntu, RHEL and SLES hosts listed in vars/zms-app.yml; a
+          single-distro deployment such as deployments/web-app cannot run it.
+          Nothing is wrong with this host. To run the lab, deploy the five-host
+          set in deployments/custom/terraform.tfvars.example, or re-point
+          db_distro_group in vars/zms-app.yml.
+      loop: "{{ zms_assignments_absent_db }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Keep only the services this estate can run
+      ansible.builtin.set_fact:
+        zms_assignments: "{{ zms_assignments | difference(zms_assignments_absent_db) }}"
+
+    - name: Leave web hosts that run no microservice alone
+      ansible.builtin.meta: end_host
+      when: zms_assignments | length == 0
+  tasks:
+    - name: Deploy each microservice assigned to this host
+      ansible.builtin.include_role:
+        name: zms_microservice
+        apply:
+          tags: [zms-app, zms-app-services]
+      vars:
+        zms_service_name: "{{ zms_assignment.key }}"
+        zms_service_spec: "{{ zms_assignment.value }}"
+      loop: "{{ zms_assignments }}"
+      loop_control:
+        loop_var: zms_assignment
+        label: "{{ zms_assignment.key }}"
+      tags: [zms-app, zms-app-services]

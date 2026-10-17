@@ -1,0 +1,38 @@
+---
+# Point a domain controller's DNS server at Azure DNS for everything outside
+# the AD zones. Included by windows-adds.yml, windows-adc.yml and
+# windows-rodc.yml after promotion. New on Azure; AWS relied on root hints.
+#
+# Why: once windows-domain-join.yml points a member at the DC, the DC is that
+# member's only resolver, so every non-AD name (Chocolatey's feed, Windows
+# Update, *.vault.azure.net, an Azure Private DNS zone) is resolved by the DC.
+# Root hints work through the NAT Gateway, but Microsoft's guidance for DCs in
+# Azure is to forward to the platform resolver, 168.63.129.16, which is also
+# the only resolver that can answer for Azure Private DNS zones linked to the
+# VNet. Forwarders are per-server settings, not replicated, so every DC that
+# runs DNS sets them itself.
+#
+# Set ad_dns_forwarders: [] (group_vars/os_windows.yml or -e) to keep the AWS
+# behaviour of root hints only.
+- name: Set the DNS server forwarders to Azure DNS
+  ansible.windows.win_powershell:
+    parameters:
+      Forwarders: "{{ ad_dns_forwarders }}"
+    script: |
+      param([string[]]$Forwarders)
+      $ErrorActionPreference = 'Stop'
+      $current = @((Get-DnsServerForwarder).IPAddress | ForEach-Object { $_.IPAddressToString })
+      $have = ($current | Sort-Object) -join ','
+      $want = ($Forwarders | Sort-Object) -join ','
+      if ($have -ne $want) {
+          Set-DnsServerForwarder -IPAddress $Forwarders
+          $Ansible.Changed = $true
+      } else {
+          $Ansible.Changed = $false
+      }
+  register: dns_forwarder
+  # The DNS Server service can still be starting after the promotion reboot.
+  until: dns_forwarder is succeeded
+  retries: 10
+  delay: 15
+  when: ad_dns_forwarders | default([]) | length > 0
