@@ -26,7 +26,7 @@
   tasks:
     - name: Skip non-Debian hosts
       ansible.builtin.meta: end_host
-      when: ansible_os_family != "Debian"
+      when: ansible_facts['os_family'] != "Debian"
 
     - name: Install MySQL server and the Python client (for Ansible mysql modules)
       ansible.builtin.apt:
@@ -44,7 +44,8 @@
         enabled: true
 
     - name: Set the MySQL root password (switch root from auth_socket to password auth)
-      community.mysql.mysql_user:
+      ansible.mysql.mysql_user:
+        column_case_sensitive: true   # the default; explicit so grants never get uppercased column names
         name: root
         host: localhost
         password: "{{ mysql_root_password }}"

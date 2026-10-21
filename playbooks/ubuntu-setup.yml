@@ -27,7 +27,7 @@
   tasks:
     - name: Skip non-Debian hosts
       ansible.builtin.meta: end_host
-      when: ansible_os_family != "Debian"
+      when: ansible_facts['os_family'] != "Debian"
 
     # --- Full package update -------------------------------------------------
     - name: Update apt cache and perform a full upgrade

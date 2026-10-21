@@ -46,9 +46,9 @@
     - sd_db_units.results[0].rc != 0
     - sd_db_units.results[1].rc != 0
 
-# community.mysql needs PyMySQL in the interpreter Ansible runs modules with,
+# ansible.mysql needs PyMySQL in the interpreter Ansible runs modules with,
 # which is not always /usr/bin/python3 (RHEL 8, SLES 15). See roles/pymysql_client.
-- name: Make PyMySQL importable for the community.mysql modules
+- name: Make PyMySQL importable for the ansible.mysql modules
   ansible.builtin.include_role:
     name: pymysql_client
 
@@ -92,7 +92,7 @@
   ansible.builtin.meta: flush_handlers
 
 - name: Create the service desk database
-  community.mysql.mysql_db:
+  ansible.mysql.mysql_db:
     name: "{{ sd_db_name }}"
     state: present
     encoding: utf8mb4
@@ -104,7 +104,8 @@
   no_log: true
 
 - name: Create the application account, scoped to this schema only
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
+    column_case_sensitive: true   # the default; explicit so grants never get uppercased column names
     name: "{{ sd_db_user }}"
     host: "{{ sd_db_client_pattern }}"
     password: "{{ sd_db_password }}"
@@ -135,8 +136,10 @@
 # Scoped to sd_db_user alone, so it cannot touch root, mysql.sys or anything a
 # different lab created.
 - name: Find superseded accounts for this application user
-  community.mysql.mysql_query:
-    query: "SELECT host FROM mysql.user WHERE user = %s AND host <> %s"
+  ansible.mysql.mysql_query:
+    # `host AS host`: MariaDB's mysql.user is a view whose column is `Host`, so a
+    # bare `SELECT host` returns rows keyed `Host` and item.host is undefined.
+    query: "SELECT host AS host FROM mysql.user WHERE user = %s AND host <> %s"
     positional_args:
       - "{{ sd_db_user }}"
       - "{{ sd_db_client_pattern }}"
@@ -160,7 +163,8 @@
   when: (sd_db_stale_accounts.query_result[0] | default([])) | length > 0
 
 - name: Remove the superseded accounts
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
+    column_case_sensitive: true   # the default; explicit so grants never get uppercased column names
     name: "{{ sd_db_user }}"
     host: "{{ item.host }}"
     state: absent

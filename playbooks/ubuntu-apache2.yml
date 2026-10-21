@@ -13,7 +13,7 @@
   tasks:
     - name: Skip non-Debian hosts
       ansible.builtin.meta: end_host
-      when: ansible_os_family != "Debian"
+      when: ansible_facts['os_family'] != "Debian"
 
     - name: Install Apache2
       ansible.builtin.apt:

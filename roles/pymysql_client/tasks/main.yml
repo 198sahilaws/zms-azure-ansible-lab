@@ -1,7 +1,7 @@
 ---
 # Make PyMySQL importable by the Python that RUNS ANSIBLE MODULES on this host.
 #
-# community.mysql imports PyMySQL inside the module, so it must be installed
+# ansible.mysql imports PyMySQL inside the module, so it must be installed
 # for ansible_facts.python.executable, which is not always /usr/bin/python3:
 #
 #   host            Ansible's interpreter       /usr/bin/python3
@@ -108,7 +108,7 @@
   ansible.builtin.fail:
     msg: >-
       PyMySQL is not importable by {{ pymysql_python }} (Python {{ pymysql_pyver }}),
-      the interpreter Ansible runs the community.mysql modules with on
+      the interpreter Ansible runs the ansible.mysql modules with on
       {{ inventory_hostname }}. Neither the distro packages nor pip could install
       it. pip said: {{ (pymysql_pip.stderr | default('not run', true)) | truncate(300) }}.
       Install it by hand: {{ pymysql_python }} -m pip install PyMySQL

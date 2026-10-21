@@ -12,8 +12,9 @@
 # The `ansible` PPA package installs the whole community bundle into
 #   /usr/lib/python3/dist-packages/ansible_collections
 # and ships versions NEWER than several caps here — observed on a live node:
-# community.mysql 5.0.2 (cap <4), community.general 13.4.0 (cap <12) on the AWS
-# node; the same PPA bundle also carries azure.azcollection 3.x. ansible.cfg sets
+# community.mysql 5.0.2 (since replaced by ansible.mysql), community.general
+# 13.4.0 (cap <12) on the AWS node; the same PPA bundle also carries
+# azure.azcollection 3.x. ansible.cfg sets
 #   collections_path = collections
 # so at RUNTIME /opt/control-repo/collections is searched first and the pinned
 # versions win. That is the intended behaviour and it is what actually happens.
@@ -55,7 +56,14 @@ collections:
     version: ">=1.4.0,<2.0.0"
   - name: community.general
     version: ">=7.0.0,<12.0.0"
-  - name: community.mysql      # MySQL modules (ubuntu-mysql)
-    version: ">=3.0.0,<4.0.0"
+  # MySQL/MariaDB modules (ubuntu-mysql, rhel/sles-mariadb, servicedesk_db,
+  # zms_app_db). community.mysql is retired: 4.3 deprecates every module,
+  # 5.x ships none (only redirects here), and 3.x imports
+  # ansible.module_utils._text, which ansible-core removes in 2.24. The
+  # modules moved to ansible.mysql unchanged; the repo calls them by their
+  # ansible.mysql.* names. Its one breaking change (mysql_user lost the `user`
+  # alias) does not apply: every task uses `name`.
+  - name: ansible.mysql
+    version: ">=5.0.0,<6.0.0"
   - name: ansible.posix        # profile_tasks callback (task timing in output)
     version: ">=1.5.0,<3.0.0"

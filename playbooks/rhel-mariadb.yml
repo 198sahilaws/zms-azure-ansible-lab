@@ -39,7 +39,7 @@
 
     # PyMySQL for the interpreter Ansible actually uses here (python3.11 on
     # RHEL 8 and SLES 15, not /usr/bin/python3). See roles/pymysql_client.
-    - name: Make PyMySQL importable for the community.mysql modules
+    - name: Make PyMySQL importable for the ansible.mysql modules
       ansible.builtin.include_role:
         name: pymysql_client
 
@@ -50,7 +50,8 @@
         enabled: true
 
     - name: Set the MariaDB root password (switch root from unix_socket to password auth)
-      community.mysql.mysql_user:
+      ansible.mysql.mysql_user:
+        column_case_sensitive: true   # the default; explicit so grants never get uppercased column names
         name: root
         host: localhost
         password: "{{ mysql_root_password }}"

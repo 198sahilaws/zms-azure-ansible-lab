@@ -162,9 +162,9 @@
       or point that service at a different db_distro_group in vars/zms-app.yml.
   when: zms_mariadb_unit.rc != 0
 
-# community.mysql needs PyMySQL in the interpreter Ansible runs modules with,
+# ansible.mysql needs PyMySQL in the interpreter Ansible runs modules with,
 # which is not always /usr/bin/python3 (RHEL 8, SLES 15). See roles/pymysql_client.
-- name: Make PyMySQL importable for the community.mysql modules
+- name: Make PyMySQL importable for the ansible.mysql modules
   ansible.builtin.include_role:
     name: pymysql_client
 
@@ -189,7 +189,7 @@
   ansible.builtin.meta: flush_handlers
 
 - name: Create the application schemas
-  community.mysql.mysql_db:
+  ansible.mysql.mysql_db:
     name: "{{ item.value.db_name }}"
     state: present
     encoding: utf8mb4
@@ -209,14 +209,18 @@
 # wrong host. In the shipped topology every database host owns exactly one
 # schema, so this loop runs once — the list exists for the custom maps.
 - name: Create the application account and grant it only its own schemas
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
+    column_case_sensitive: true   # the default; explicit so grants never get uppercased column names
     name: "{{ zms_app_db_user }}"
     host: "{{ item.pattern }}"
     password: "{{ zms_app_db_password }}"
     plugin: mysql_native_password
-    # -> "zms_catalog.*:ALL" (one entry per schema behind this pattern, joined by /)
+    # -> "zms_catalog.*:ALL" (one entry per schema behind this pattern, joined by /).
+    # Built with product/join, not regex_replace: inside a >- block YAML does
+    # not unescape, so a '\\1' backreference reached Python as a literal
+    # backslash and every schema was granted as `\1`.*.
     priv: >-
-      {{ item.schemas | map('regex_replace', '^(.*)$', '\\1.*:ALL') | join('/') }}
+      {{ item.schemas | product(['.*:ALL']) | map('join') | join('/') }}
     state: present
     login_user: root
     login_password: "{{ zms_mysql_root_password }}"
@@ -238,8 +242,10 @@
 # Scoped to zms_app_db_user alone, so it cannot touch root, mysql.sys, the
 # Service Desk's sdapp, or anything another lab created on the same host.
 - name: List every existing account for this application user
-  community.mysql.mysql_query:
-    query: "SELECT host FROM mysql.user WHERE user = %s"
+  ansible.mysql.mysql_query:
+    # `host AS host`: MariaDB's mysql.user is a view whose column is `Host`, so a
+    # bare `SELECT host` returns rows keyed `Host` and item.host is undefined.
+    query: "SELECT host AS host FROM mysql.user WHERE user = %s"
     positional_args:
       - "{{ zms_app_db_user }}"
     login_user: root
@@ -267,7 +273,8 @@
   when: zms_db_stale_hosts | length > 0
 
 - name: Remove the superseded accounts
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
+    column_case_sensitive: true   # the default; explicit so grants never get uppercased column names
     name: "{{ zms_app_db_user }}"
     host: "{{ item }}"
     state: absent
