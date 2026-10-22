@@ -25,6 +25,10 @@
   vars_files:
     - ../vars/zms-app.yml
   pre_tasks:
+    - name: Skip estates that run the Service Desk instead (see zms_app_enabled)
+      ansible.builtin.meta: end_host
+      when: not (zms_app_enabled | bool)
+
     - name: Skip hosts that are not the storefront's home
       ansible.builtin.meta: end_host
       when: zms_app_frontend.app_distro_group not in group_names

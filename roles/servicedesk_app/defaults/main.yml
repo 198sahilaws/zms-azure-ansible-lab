@@ -54,9 +54,9 @@ sd_db_password: ""
 sd_db_host: ""
 
 sd_db_group: role_db
-sd_db_distro_group: distro_ubuntu
+sd_db_distro_group: os_linux
 sd_middleware_group: role_middleware
-sd_middleware_distro_group: distro_ubuntu
+sd_middleware_distro_group: os_linux
 
 # Fallbacks only. vars/servicedesk.yml defines both and, being a vars_file, wins
 # over these. They exist so the role does not blow up on an undefined variable if

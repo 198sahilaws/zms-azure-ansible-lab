@@ -30,7 +30,7 @@ orchestrate.yml          every convergence playbook, in dependency order (manual
 bootstrap.yml            control-node self-converge: writes the SSH key from Key Vault
 local.yml                ansible-pull shim -> bootstrap.yml
 inventory/azure_rm.yml   azure_rm dynamic inventory (replaces aws_ec2.yml)
-inventory/group_vars/    all, os_linux, os_windows, distro_{ubuntu,rhel,sles}, osver_8
+inventory/group_vars/    all, os_linux, os_windows, distro_{ubuntu,rhel,sles}, osver_8, osver_15
 playbooks/               29 playbooks, plus tasks/azure-dns-forwarder.yml
 roles/                   baseline, servicedesk_{app,db,client}, zms_{app_db,microservice}
 vars/                    servicedesk.yml, zms-app.yml (application topology maps)
@@ -60,7 +60,15 @@ Everything above the inventory and the secret lookup is the AWS code, with the 2
 
 - **ZMS restart handler.** Calling the role in a loop (needed for two services on one host) broke its handler: in testing it resolved the service name from another host's loop item and restarted the wrong unit. The handler now reads a fact pinned per call.
 - **Shared payload restart.** With two services on one host, only the first call saw the payload change and restarted. The second call now restarts too.
-- **Service Desk web tier.** `servicedesk-web.yml` failed every converge on an estate that has an Ubuntu web host but no middleware tier (the ZMS estate). It now skips when the estate has no `role_middleware` group at all, the same rule `zms-app-services.yml` uses.
+- **Service Desk web tier.** `servicedesk-web.yml` failed every converge on an estate that has an Ubuntu web host but no middleware tier (the ZMS estate). It now skips when the estate has no `role_middleware` group at all, the same rule `zms-app-services.yml` uses. `servicedesk-client.yml` now has the same guard.
+
+### Choosing the distro and the AD domain (deployments/web-app-adds)
+
+- **Service Desk on any distro.** `vars/servicedesk.yml` places each tier on `role_<tier>` & `os_linux` instead of `distro_ubuntu`. The roles already handled Ubuntu, RHEL and SLES (apt/dnf/zypper, MySQL or MariaDB, firewalld), but the Ubuntu pin silently left RHEL or SLES tiers out. The database follows the db host: MySQL on Ubuntu, MariaDB on RHEL and SLES.
+- **ZMS lab stays off Service Desk estates.** With RHEL or SLES Service Desk tiers, the ZMS placement map would match too (orders on the web host, `zms_catalog`/`zms_orders` on the db). `zms_app_enabled` in `vars/zms-app.yml` is false whenever the estate has a `role_middleware` tier, and `zms-app-db`, `-services` and `-frontend` end there. Override with `-e zms_app_enabled=true`.
+- **AD domain from Terraform.** `ad_domain_name` / `ad_domain_netbios` live in `group_vars/os_windows.yml` and read the `ADDomain` / `ADNetBIOS` VM tags; without them (adds, custom) they stay `alcor.co.in` / `ALCOR`. The four AD plays no longer pin the name as play vars, which outranked the inventory.
+- **Ubuntu 26.04 MySQL.** 26.04 ships MySQL 8.4, which no longer loads `mysql_native_password`. Every account on an Ubuntu db host uses it (root, `sdapp`), so `ubuntu-mysql.yml` writes `/etc/mysql/mysql.conf.d/zz-native-password.cnf` (`mysql_native_password = ON`) and restarts MySQL, only when `mysqld --version` is Oracle MySQL 8.4.x; 22.04 and 24.04 (MySQL 8.0) are untouched. MySQL 9.0 removed the plugin, so a 9.x server would need the accounts moved to `caching_sha2_password`.
+- **SLES 15 Python.** SLES 15 ships Python 3.6, which ansible-core 2.21 cannot use on a managed node. `rhel8-python-bootstrap.yml` gained a SLES 15 play that installs `python311` (activating SUSE's Python 3 Module if needed), and `group_vars/osver_15.yml` selects it, as `osver_8.yml` does for RHEL 8.
 
 ## The ZMS topology on Azure
 

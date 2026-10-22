@@ -26,8 +26,8 @@
   vars:
     sd_tier: web
   pre_tasks:
-    # The web tier's hosts pattern (role_web & distro_ubuntu) also matches the
-    # Ubuntu web host of the ZMS microservices estate (deployments/custom),
+    # The web tier's hosts pattern (role_web & os_linux) also matches the
+    # web hosts of the ZMS microservices estate (deployments/custom),
     # which has no middleware tier at all. Without this the role's
     # "no middleware host" failure marks every hourly converge failed there.
     # Same rule as zms-app-services.yml: an estate that has NO middleware group

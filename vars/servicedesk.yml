@@ -12,18 +12,20 @@
 # map below names INVENTORY GROUPS and each play resolves the intersection to an
 # address at run time:
 #
-#     groups['role_db'] | intersect(groups['distro_ubuntu']) | first
+#     groups['role_db'] | intersect(groups['os_linux']) | first
 #
 # Re-run Terraform, get new IPs, converge again — the map still holds.
 #
-# TOPOLOGY (deployments/web-app builds exactly this)
+# TOPOLOGY (deployments/web-app builds exactly this on Ubuntu; web-app-adds
+# and the ring-fenced rings build it on whatever distro each tier runs)
 #
 #   host                                role        what runs there
 #   ----------------------------------  ----------  --------------------------
-#   role_web        & distro_ubuntu     web         gunicorn :8090, HTML only
-#   role_middleware & distro_ubuntu     middleware  gunicorn :8091, all SQL
-#   role_db         & distro_ubuntu     db          MySQL 8, `servicedesk`
-#   role_client     & distro_ubuntu     client      sd-traffic timer (real HTTP)
+#   role_web        & os_linux          web         gunicorn :8090, HTML only
+#   role_middleware & os_linux          middleware  gunicorn :8091, all SQL
+#   role_db         & os_linux          db          MySQL 8 (Ubuntu) or
+#                                                   MariaDB (RHEL/SLES)
+#   role_client     & os_linux          client      sd-traffic timer (real HTTP)
 #
 # Every request crosses TWO host boundaries now:
 #
@@ -44,16 +46,26 @@
 # middleware verbatim, so those responses are byte-identical to what the
 # single-tier app returned.
 #
-# NOTE ON MySQL vs MariaDB: the Ubuntu db host runs ORACLE MySQL
-# (playbooks/ubuntu-mysql.yml installs mysql-server), unlike the rest of the
-# estate which runs MariaDB. The schema is deliberately kept to syntax both
-# accept, and the role probes for whichever unit exists, so repointing this app
-# at a MariaDB host needs no code change — only an edit below.
+# NOTE ON MySQL vs MariaDB: an Ubuntu db host runs ORACLE MySQL
+# (playbooks/ubuntu-mysql.yml installs mysql-server); a RHEL or SLES db host
+# runs MariaDB (rhel-mariadb.yml / sles-mariadb.yml). The schema is
+# deliberately kept to syntax both accept, and the role probes for whichever
+# unit exists, so the app follows the db host's distro with no code change.
 
 # --- Placement ---------------------------------------------------------------
 # Role group intersected with distro group. Change these to move the app.
+#
+# WHY os_linux AND NOT distro_ubuntu. Every role here already branches on
+# ansible_facts['os_family'] (apt / dnf / zypper, MySQL or MariaDB config
+# directory and socket, firewalld), so the app runs on Ubuntu, RHEL and SLES.
+# Pinning these to distro_ubuntu meant a tier built on RHEL or SLES
+# (deployments/web-app-adds linux_distro / tier_os, the ring-fenced tier_os)
+# was silently left out and the whole app failed to wire up. os_linux keeps the
+# Windows hosts of an estate out, which is all the distro group has to do.
+# The ZMS microservices estate (deployments/custom) has no role_middleware
+# host, and every servicedesk play ends there before touching anything.
 sd_app_group: role_web
-sd_app_distro_group: distro_ubuntu
+sd_app_distro_group: os_linux
 
 # role_middleware comes from the VM tag Role=middleware, which Terraform sets
 # from linux_hosts in deployments/web-app. The tag value is lowercase
@@ -61,13 +73,13 @@ sd_app_distro_group: distro_ubuntu
 # role_Middleware and match nothing — see the tag/inventory contract in
 # inventory/azure_rm.yml.
 sd_middleware_group: role_middleware
-sd_middleware_distro_group: distro_ubuntu
+sd_middleware_distro_group: os_linux
 
 sd_db_group: role_db
-sd_db_distro_group: distro_ubuntu
+sd_db_distro_group: os_linux
 
 sd_client_group: role_client
-sd_client_distro_group: distro_ubuntu
+sd_client_distro_group: os_linux
 
 # --- Staying inside one ring ---------------------------------------------------
 #

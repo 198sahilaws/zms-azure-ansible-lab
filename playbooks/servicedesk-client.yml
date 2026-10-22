@@ -18,5 +18,12 @@
   gather_facts: true
   vars_files:
     - ../vars/servicedesk.yml
+  pre_tasks:
+    # Same rule as servicedesk-web.yml and servicedesk-db.yml: an estate with
+    # no middleware tier does not run the service desk (deployments/custom can
+    # have a Linux client of its own), so leave its client hosts alone.
+    - name: Skip estates that do not run the service desk
+      ansible.builtin.meta: end_host
+      when: (groups[sd_middleware_group] | default([])) | length == 0
   roles:
     - servicedesk_client

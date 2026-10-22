@@ -41,3 +41,23 @@ ansible_password: >-
 # platform resolver. Empty list = root hints only, as on AWS.
 ad_dns_forwarders:
   - 168.63.129.16
+
+# The AD forest the windows-adds, -adc, -rodc and -domain-join plays build or
+# join. Terraform publishes it as the VM tags ADDomain / ADNetBIOS where the
+# deployment lets you choose the domain (deployments/web-app-adds, from its
+# ad_domain_name variable). Estates without those tags (adds, custom) get the
+# lab's original forest, alcor.co.in / ALCOR, exactly as before.
+#
+# Defined here, not as play vars: play vars outrank inventory variables, so a
+# play-level `ad_domain_name: alcor.co.in` would always win over the tag.
+# Override for a single run with -e ad_domain_name=... (extra vars win).
+#
+# NetBIOS: the ADNetBIOS tag, else the first DNS label upper-cased and cut to
+# 15 characters with any trailing hyphen dropped -- the same rule Terraform
+# uses when it fills the tag, so alcor.co.in still gives ALCOR.
+ad_domain_name: >-
+  {{ (hostvars[inventory_hostname]['tags'] | default({}, true))['ADDomain']
+     | default('alcor.co.in', true) }}
+ad_domain_netbios: >-
+  {{ (hostvars[inventory_hostname]['tags'] | default({}, true))['ADNetBIOS']
+     | default(ad_domain_name.split('.')[0][:15] | upper | regex_replace('-+$', ''), true) }}

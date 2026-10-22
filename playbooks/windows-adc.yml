@@ -24,7 +24,8 @@
   ignore_unreachable: true # a down/unsynced Windows host must not abort the converge
   gather_facts: true
   vars:
-    ad_domain_name: alcor.co.in
+    # ad_domain_name comes from inventory/group_vars/os_windows.yml (the
+    # ADDomain tag, else alcor.co.in).
     # Forest-root DC private IP, auto-discovered from the inventory (the role_dc
     # group; its inventory hostname IS the private IP).
     #

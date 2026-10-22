@@ -1,0 +1,14 @@
+---
+# SLES 15 ONLY (inventory group osver_15, keyed off the OSVersion tag; no other
+# distro in this lab uses version "15").
+#
+# Same reason as osver_8.yml: SLES 15's system interpreter is Python 3.6, which
+# the control node's ansible-core 2.21 cannot use on a managed node, so every
+# task, fact gathering included, would fail. SLES 16 (python 3.13) is
+# unaffected.
+#
+# The interpreter below is installed by the SLES 15 play in
+# playbooks/rhel8-python-bootstrap.yml, which uses `raw` and runs FIRST in
+# orchestrate.yml / converge.sh. Pointing at it before it exists is safe: raw
+# ignores ansible_python_interpreter.
+ansible_python_interpreter: /usr/bin/python3.11

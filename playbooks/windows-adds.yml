@@ -1,6 +1,7 @@
 ---
 # Promote a Windows Server to the FIRST domain controller of a NEW forest.
-# Root domain: alcor.co.in
+# Root domain: ad_domain_name from inventory/group_vars/os_windows.yml -- the
+# ADDomain tag Terraform sets (deployments/web-app-adds), else alcor.co.in.
 #
 #   ansible-playbook playbooks/windows-adds.yml
 #   ansible-playbook playbooks/windows-adds.yml --limit win-dc01
@@ -10,13 +11,11 @@
 # from the estate's Azure Key Vault at run time — never stored in Git. The module marks
 # safe_mode_password as no_log automatically.
 
-- name: Build new AD forest (alcor.co.in)
+- name: Build a new AD forest
   hosts: "{{ target | default('role_dc') }}"
   ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
   gather_facts: true
   vars:
-    ad_domain_name: alcor.co.in
-    ad_domain_netbios: ALCOR
     # DSRM / safe-mode password from the single consolidated secret, key
     # dsrm_password. Resolved field-scoped inline (see group_vars/all.yml note).
     dsrm_password: >-

@@ -47,6 +47,18 @@
 # untouched. To bring it in, install MariaDB there instead and point a service
 # at it.
 
+# --- Which estates run this lab -------------------------------------------
+#
+# The ZMS microservices lab and the Service Desk lab share role_web and role_db,
+# and on Azure both can run on RHEL and SLES. In a Service Desk estate whose
+# tiers are RHEL or SLES (deployments/web-app-adds with linux_distro, the
+# ring-fenced tier_os) the placement map below would otherwise match: the
+# orders service would land on the Service Desk web host and zms_catalog /
+# zms_orders on its database. A middleware tier is what marks a Service Desk
+# estate (the ZMS lab has none), so the three ZMS plays end on every host when
+# there is one. Force either way with -e zms_app_enabled=true|false.
+zms_app_enabled: "{{ (groups['role_middleware'] | default([])) | length == 0 }}"
+
 # --- Placement -------------------------------------------------------------
 
 # The three data-owning microservices. Each one owns its schema outright: no

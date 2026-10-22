@@ -43,6 +43,50 @@
         state: started
         enabled: true
 
+    # MySQL 8.4 (Ubuntu 26.04) still ships mysql_native_password but no longer
+    # LOADS it, so `IDENTIFIED WITH mysql_native_password` fails with "Plugin
+    # 'mysql_native_password' is not loaded". Every account this repo creates
+    # on an Ubuntu db host uses it: root below and sdapp (roles/servicedesk_db),
+    # which keeps PyMySQL free of the `cryptography` dependency that
+    # caching_sha2_password needs over a plain connection. Load it again.
+    #
+    # Gated on the version, not applied everywhere: MySQL 8.0 (Ubuntu 22.04 and
+    # 24.04) has the plugin built in and does not know this option, and an
+    # unknown option in my.cnf stops mysqld from starting. Only 8.4.x needs it.
+    - name: Read the MySQL server version
+      ansible.builtin.command: mysqld --version
+      register: mysql_server_version
+      changed_when: false
+
+    - name: Load mysql_native_password on MySQL 8.4 and later
+      ansible.builtin.copy:
+        dest: /etc/mysql/mysql.conf.d/zz-native-password.cnf
+        content: |
+          # Managed by Ansible (playbooks/ubuntu-mysql.yml). MySQL 8.4 no longer
+          # loads this plugin by default; the lab's accounts use it.
+          [mysqld]
+          mysql_native_password = ON
+        owner: root
+        group: root
+        mode: "0644"
+      register: mysql_native_cnf
+      # Oracle MySQL 8.4.x only. MariaDB reports 10.x/11.x here and has no such
+      # option; MySQL 9.0 removed the plugin altogether, so on 9.x this option
+      # would stop mysqld and the accounts would need caching_sha2_password.
+      when:
+        - "'MariaDB' not in mysql_server_version.stdout"
+        - mysql_version_mm is version('8.4', '>=')
+        - mysql_version_mm is version('9.0', '<')
+      vars:
+        mysql_version_mm: >-
+          {{ mysql_server_version.stdout | regex_search('[0-9]+[.][0-9]+') | default('0.0', true) }}
+
+    - name: Restart MySQL so the plugin is loaded
+      ansible.builtin.service:
+        name: mysql
+        state: restarted
+      when: mysql_native_cnf is changed
+
     - name: Set the MySQL root password (switch root from auth_socket to password auth)
       ansible.mysql.mysql_user:
         column_case_sensitive: true   # the default; explicit so grants never get uppercased column names

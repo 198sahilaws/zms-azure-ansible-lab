@@ -1,5 +1,7 @@
 ---
-# Ensure RHEL 8 hosts have an ansible-supported Python interpreter.
+# Ensure RHEL 8 and SLES 15 hosts have an ansible-supported Python interpreter.
+# (The file name predates the SLES 15 play at the bottom; it is kept because
+# orchestrate.yml and scripts/converge.sh run it by this name, first.)
 #
 # MUST RUN BEFORE ANY OTHER PLAYBOOK TOUCHES A RHEL 8 HOST — it is first in
 # orchestrate.yml and converge.sh for that reason.
@@ -49,3 +51,38 @@
     - name: Report the interpreter in use
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }}: {{ rhel8_py_check.stdout | default('') | trim }}"
+
+# SLES 15 has the same problem as RHEL 8: its system Python is 3.6, and
+# ansible-core 2.20+ needs 3.9 or newer on the managed node. SLES 16 ships
+# 3.13 and needs nothing, hence osver_15 rather than distro_sles.
+#
+# python311 is in SUSE's Python 3 Module. On Azure PAYG images that module may
+# not be activated yet, so a failed install activates it with SUSEConnect
+# (free with the SLES subscription the image already carries) and retries.
+# Must match ansible_python_interpreter in inventory/group_vars/osver_15.yml.
+- name: Bootstrap a supported Python interpreter on SLES 15
+  hosts: "{{ target | default('osver_15:&distro_sles') }}"
+  gather_facts: false
+  become: true
+  ignore_unreachable: true
+  vars:
+    sles15_python_package: python311
+    sles15_python_path: /usr/bin/python3.11
+  tasks:
+    - name: Install a supported Python if the interpreter is missing
+      ansible.builtin.raw: >-
+        command -v {{ sles15_python_path }} >/dev/null 2>&1
+        || zypper --non-interactive install {{ sles15_python_package }}
+        || { SUSEConnect -p "sle-module-python3/$(. /etc/os-release && echo "$VERSION_ID")/$(uname -m)"
+             && zypper --non-interactive install {{ sles15_python_package }}; }
+      register: sles15_py
+      changed_when: "'Installing:' in (sles15_py.stdout | default(''))"
+
+    - name: Confirm the interpreter is now present
+      ansible.builtin.raw: "{{ sles15_python_path }} --version"
+      register: sles15_py_check
+      changed_when: false
+
+    - name: Report the interpreter in use
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ sles15_py_check.stdout | default('') | trim }}"

@@ -52,6 +52,10 @@
          | default(zms_app_db_password_from_secret, true)
          | default(zms_mysql_root_password, true) }}
   pre_tasks:
+    - name: Skip estates that run the Service Desk instead (see zms_app_enabled)
+      ansible.builtin.meta: end_host
+      when: not (zms_app_enabled | bool)
+
     - name: Skip non-Linux hosts
       ansible.builtin.meta: end_host
       when: ansible_facts['system'] | default('') != 'Linux'

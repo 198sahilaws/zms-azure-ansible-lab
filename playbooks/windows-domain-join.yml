@@ -1,5 +1,6 @@
 ---
-# Join Windows machines to the AD domain alcor.co.in.
+# Join Windows machines to the AD domain: ad_domain_name from
+# inventory/group_vars/os_windows.yml (the ADDomain tag, else alcor.co.in).
 #
 #   ansible-playbook playbooks/windows-domain-join.yml                 # all os_windows (except DCs)
 #   ansible-playbook playbooks/windows-domain-join.yml --limit win-app01
@@ -12,12 +13,13 @@
 # Leave both empty to use the Windows admin account (winrm_username), which the
 # forest root makes a Domain Admin; set both to use another account.
 
-- name: Join Windows hosts to AD domain alcor.co.in
+- name: Join Windows hosts to the AD domain
   hosts: "{{ target | default('os_windows') }}"
   ignore_unreachable: true   # a down/unsynced Windows host must not abort the converge
   gather_facts: true
   vars:
-    ad_domain_name: alcor.co.in
+    # ad_domain_name comes from inventory/group_vars/os_windows.yml (the
+    # ADDomain tag, else alcor.co.in).
     # DC private IP, auto-discovered from the inventory (role_dc group; its
     # inventory hostname IS the private IP). Required: AD join resolves the domain
     # via SRV records (_ldap._tcp.dc._msdcs.<domain>) that only the DC's own DNS
