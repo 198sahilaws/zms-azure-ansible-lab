@@ -21,6 +21,7 @@ env/
 
 # Ansible / Terraform / cloud artifacts
 *.retry
+collections/
 .ansible/
 .terraform/
 *.tfstate

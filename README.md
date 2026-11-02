@@ -6,7 +6,7 @@ It runs from the Ansible control node inside the VNet, in **push mode**, on two 
 
 ## Status
 
-Written 2026-10-16. Statically checked: every playbook passes `--syntax-check` under ansible-core 2.21, `ansible-lint` reports nothing new against the AWS baseline, the inventory file renders the expected groups from fake VM data, and the Key Vault lookups and the multi-service deployment loop were exercised against mocks. **It has not run against a live Azure estate yet.** The first live gate is step 4 of the work breakdown: `ansible-inventory --graph` on the control node shows the hosts in the right groups.
+Written 2026-10-16. Statically checked: every playbook passes `--syntax-check` under ansible-core 2.21, `ansible-lint` reports nothing new against the AWS baseline, the inventory file renders the expected groups from fake VM data, and the Key Vault lookups and the multi-service deployment loop were exercised against mocks. **Since run live against `deployments/web-app`** (debug bundle of 2026-10-29): the inventory resolves every host into the right groups, the full converge succeeds, the Service Desk is healthy on every tier, and later re-converges report no changes. The other estates have not yet been converged live.
 
 ## How it joins the Terraform
 

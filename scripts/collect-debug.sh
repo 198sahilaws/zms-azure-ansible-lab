@@ -222,8 +222,8 @@ runsh "orchestrate.yml --syntax-check" "cd '${REPO_DIR}' && ansible-playbook orc
 
 # 13) live reachability (default verbosity; credentials are NOT printed)
 section "CONNECTIVITY PROBE (best-effort)"
-runsh "ping Linux (SSH)" "cd '${REPO_DIR}' && timeout 90 ansible os_linux -m ansible.builtin.ping -o 2>&1 | tail -n 50 || echo 'skipped/failed'"
-runsh "ping Windows (WinRM)" "cd '${REPO_DIR}' && timeout 120 ansible os_windows -m ansible.windows.win_ping -o 2>&1 | tail -n 50 || echo 'skipped/failed'"
+runsh "ping Linux (SSH)" "cd '${REPO_DIR}' && timeout 90 ansible os_linux -m ansible.builtin.ping 2>&1 | tail -n 200 || echo 'skipped/failed'"
+runsh "ping Windows (WinRM)" "cd '${REPO_DIR}' && timeout 120 ansible os_windows -m ansible.windows.win_ping 2>&1 | tail -n 200 || echo 'skipped/failed'"
 
 # ----------------------------------------------- redact + package (safety) ---
 # Defense in depth: scrub anything that looks like a token/secret value.

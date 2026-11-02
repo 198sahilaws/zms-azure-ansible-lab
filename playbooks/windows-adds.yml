@@ -1,7 +1,8 @@
 ---
 # Promote a Windows Server to the FIRST domain controller of a NEW forest.
 # Root domain: ad_domain_name from inventory/group_vars/os_windows.yml -- the
-# ADDomain tag Terraform sets (deployments/web-app-adds), else alcor.co.in.
+# ADDomain tag Terraform sets (deployments/adds, deployments/web-app-adds),
+# else alcor.co.in.
 #
 #   ansible-playbook playbooks/windows-adds.yml
 #   ansible-playbook playbooks/windows-adds.yml --limit win-dc01
