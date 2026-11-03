@@ -204,7 +204,7 @@ section "ANSIBLE LOGS"
 copy "${LOG_DIR}/ansible.log" ansible.log
 copy "${LOG_DIR}/converge-status.log" converge-status.log
 copy "${LOG_DIR}/converge-failures.log" converge-failures.log
-runsh "recent failures in ansible.log" "tail -n 600 '${LOG_DIR}/ansible.log' 2>/dev/null | grep -iE 'fatal|failed=|unreachable|error|traceback' | tail -n 120 || echo 'no ansible.log (try sudo)'"
+runsh "recent failures in ansible.log" "tail -n 600 '${LOG_DIR}/ansible.log' 2>/dev/null | grep -E 'fatal:|FAILED!|UNREACHABLE!|failed=[1-9]|unreachable=[1-9]|\\| ERROR|Traceback' | tail -n 120 || echo 'none (or no ansible.log; try sudo)'"
 
 # 11) systemd units + journals
 section "SYSTEMD (timers + services)"

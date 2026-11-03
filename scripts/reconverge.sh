@@ -140,10 +140,29 @@ if ! python3 -c 'import azure.identity, azure.mgmt.compute, azure.mgmt.network, 
   fi
 fi
 
-if ! python3 -c 'import winrm' 2>/dev/null; then
-  echo "Installing python3-winrm for the Windows estate"
-  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y python3-winrm \
-    || sudo -n python3 -m pip install --break-system-packages pywinrm
+# WinRM NTLM needs pywinrm >= 0.5 with requests-ntlm >= 1.2, which computes
+# the NT hash with pyspnego's own MD4. Ubuntu 24.04's python3-winrm (0.4.3)
+# pulls requests-ntlm 1.1.0 / ntlm-auth, which asks OpenSSL for MD4; OpenSSL 3
+# no longer provides it, so every Windows host fails with
+#   "ntlm: unsupported hash type md4"
+# A bare "import winrm" passes with that stack, hence the version check. The
+# pip copies land in /usr/local and take precedence over the apt ones.
+winrm_ntlm_ok() {
+  python3 - <<'PY' 2>/dev/null
+import sys
+from importlib.metadata import version
+import winrm, requests_ntlm, spnego  # noqa: F401
+def ver(dist):
+    return tuple(int(x) for x in version(dist).split(".")[:2])
+sys.exit(0 if ver("pywinrm") >= (0, 5) and ver("requests_ntlm") >= (1, 2) else 1)
+PY
+}
+
+if ! winrm_ntlm_ok; then
+  echo "Installing pywinrm with pyspnego-based NTLM for the Windows estate"
+  sudo -n python3 -m pip install --break-system-packages --ignore-installed \
+    'pywinrm>=0.5.0' 'requests-ntlm>=1.3.0' 'pyspnego>=0.11' \
+    || echo "WARNING: pywinrm upgrade failed; Windows hosts will be unreachable over WinRM (NTLM)." >&2
 fi
 
 # The Key Vault lookup in bootstrap.yml authenticates with the control node's
