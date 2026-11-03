@@ -131,7 +131,8 @@
 # -> /24 when the ring-fenced deployment made 10.90.% span prod, uat and dev.
 # Without this sweep an estate converged before either change keeps a live
 # `sdapp` account authorised from the wider range, and the tightening is
-# cosmetic.
+# cosmetic. Since 2026-11-03 the pattern is '%' (any host; ZMS alone enforces
+# access), and this same sweep drops the old per-ring /24 accounts.
 #
 # Scoped to sd_db_user alone, so it cannot touch root, mysql.sys or anything a
 # different lab created.

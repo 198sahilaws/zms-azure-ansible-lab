@@ -12,15 +12,11 @@ sd_db_user: sdapp
 sd_db_password: ""
 sd_mysql_root_password: ""
 
-# Which hosts the application account may connect FROM. Derived by the playbook
-# from the MIDDLEWARE host's own address (its /24), so it needs no hardcoded CIDR
-# and survives an instance replacement inside the same subnet. Not '%': the grant
-# is a boundary, not a formality.
-#
-# This default is only ever used when the playbook has not run — it is
-# deliberately the widest value in the file, so if you ever see '10.%' on a live
-# server the derivation failed rather than the policy being lax.
-sd_db_client_pattern: "10.%"
+# Which hosts the application account may connect FROM. '%' (any host): access
+# between hosts is enforced only by ZMS microsegmentation, never by MySQL host
+# patterns or NSGs (changed 2026-11-03; it used to be the middleware host's
+# /24). playbooks/servicedesk-db.yml sets the same value.
+sd_db_client_pattern: "%"
 
 # Where the drop-in config goes. A drop-in rather than editing my.cnf in place:
 # an in-place edit needs a different lineinfile per distro and a package upgrade

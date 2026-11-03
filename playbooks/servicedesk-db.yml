@@ -8,9 +8,10 @@
 # drop-in (bind-address, skip-name-resolve). The TABLES are created by
 # servicedesk-middleware.yml, which has the venv and schema.sql.
 #
-# Run before servicedesk-middleware.yml. The grant below is scoped to the
-# MIDDLEWARE host's /24, not the web host's, and in a ring-fenced estate to the
-# middleware host in THIS host's own ring — see sd_db_client_pattern.
+# Run before servicedesk-middleware.yml. The application account accepts
+# connections from ANY host ('%'): access between hosts is enforced only by
+# ZMS microsegmentation, not by NSGs or MySQL host patterns — see
+# sd_db_client_pattern below.
 
 - name: Prepare the service desk database host
   # Role AND distro intersection — role_db spans every distro in the estate, so
@@ -93,30 +94,21 @@
         # A boolean, not a credential, so the warning task below can run outside
         # no_log and actually be visible in the converge output.
         sd_db_password_is_root: "{{ sd_db_password_from_secret | length == 0 }}"
-        # Grant the app account only from the MIDDLEWARE host's own /24 —
-        # changed from the web host when the tiers were split, because the web
-        # host no longer connects to MySQL at all and granting it access would
-        # quietly re-open the path this design closes.
+        # Any host ('%'), by design since 2026-11-03: policy between hosts
+        # is enforced ONLY by ZMS microsegmentation. Until then the account
+        # was scoped to the middleware host's own /24, which kept each ring's
+        # data to its own middleware even with the ring NSGs open; that was a
+        # second enforcement point outside ZMS, so it is gone. The password is
+        # still required, and the account still holds servicedesk.* only.
         #
-        # THREE octets, not two. A /16 was adequate while one estate held one
-        # copy of the app, but the ring-fenced estate puts prod, uat and dev in
-        # one 10.90.0.0/16 — so '10.90.%' would authorise DEV's middleware
-        # against PROD's database. The ring NSGs are open to the whole VNet
-        # (no network fence), so this grant is what keeps each ring's data to
-        # its own middleware. A /24 is exactly one tier's subnet in one ring.
+        # Converging an estate built with the /24 grant drops that account
+        # ("Remove the superseded accounts" in roles/servicedesk_db), so the
+        # middleware keeps working through the '%' account.
         #
-        # Derived from the discovered address rather than a hardcoded CIDR, so
-        # it is correct in every deployment (10.0/10.90/10.191/10.192) and
-        # survives an instance replacement: a replacement keeps its subnet even
-        # though it does not keep its address, which is also why this is not
-        # a /32.
-        #
-        # sd_ring_peers (in sd_db_middleware_host above) keeps this inside THIS
-        # db host's own ring — see the explanation in vars/servicedesk.yml.
-        # Without it a three-ring estate would derive every ring's grant from
-        # whichever middleware host sorted first, and two of the three grants
-        # would be for the wrong subnet.
-        sd_db_client_pattern: "{{ sd_db_middleware_host.split('.')[0:3] | join('.') }}.%"
+        # sd_db_middleware_host above is still resolved within this ring, so a
+        # database with no middleware in its ring still fails loudly instead of
+        # serving nothing.
+        sd_db_client_pattern: "%"
       no_log: true
 
     - name: Warn when the app account is being given the MySQL root password
@@ -134,13 +126,15 @@
           them. The role will rotate the account's password on the next converge.
       when: sd_db_password_is_root | bool
 
-    - name: Show which subnet the grant will admit
+    - name: Show which hosts the grant will admit
       # Deliberately outside the no_log above: the pattern is not a secret and
       # it is the single most useful thing to see when the middleware cannot
       # connect.
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: granting '{{ sd_db_user }}'@'{{ sd_db_client_pattern }}'
+          (any host; access policy is left to ZMS), serving middleware
+          {{ sd_db_middleware_host }}
           {{ '(ring ' ~ sd_ring_group ~ ')' if sd_ring_group | length > 0 else '(single-ring estate)' }}
   roles:
     - servicedesk_db
