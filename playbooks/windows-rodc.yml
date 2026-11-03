@@ -27,7 +27,7 @@
     domain_dns_server: "{{ (groups['role_dc'] | default([]) | first) | default('', true) }}"
     # Credentials from the consolidated secret, resolved field-scoped and inline.
     # Domain-join account. EMPTY domain_join_username (the default) means the
-    # Windows admin account, as <winrm_username>@<domain>, with its own
+    # Windows admin account, as <NetBIOS>\<winrm_username>, with its own
     # password: the forest root carried that account into the domain and
     # windows-adds.yml made it a Domain Admin, so nothing has to be kept in
     # step. See tasks/domain-join-credentials.yml for the check that runs when
@@ -48,9 +48,17 @@
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).winrm_password | default('', true) }}
+    # Always NetBIOS\user, never user@domain: over WinRM (NTLM network logon)
+    # Add-Computer fails with a UPN as "A specified logon session does not
+    # exist" (Win32 1312), confirmed on Azure 2026-11-03 for the RODC join;
+    # SAFEMARCH\zmsadmin joined and promoted at once. A domain_join_username
+    # given as user@<this forest> is rewritten the same way; any other form
+    # (DOMAIN\user, or a UPN from another domain) is passed through as is.
     domain_admin_user: >-
-      {{ domain_join_user_secret if domain_join_user_secret | length > 0
-         else ((domain_admin_account ~ '@' ~ ad_domain_name) if domain_admin_account | length > 0 else '') }}
+      {{ (ad_domain_netbios ~ ad_backslash ~ (domain_join_user_secret | regex_replace('@.*$', '')))
+           if (domain_join_user_secret | lower).endswith('@' ~ (ad_domain_name | lower))
+         else domain_join_user_secret if domain_join_user_secret | length > 0
+         else ((ad_domain_netbios ~ ad_backslash ~ domain_admin_account) if domain_admin_account | length > 0 else '') }}
     domain_admin_password: >-
       {{ domain_join_password_secret if domain_join_user_secret | length > 0
          else domain_admin_account_password }}

@@ -63,3 +63,9 @@ ad_domain_name: >-
 ad_domain_netbios: >-
   {{ (hostvars[inventory_hostname]['tags'] | default({}, true))['ADNetBIOS']
      | default(ad_domain_name.split('.')[0][:15] | upper | regex_replace('-+$', ''), true) }}
+
+# One literal backslash, for building NETBIOS\user account names. It has to be
+# a variable from a double-quoted YAML string: in ansible-core 2.21 a Jinja
+# '\\' literal inside a block scalar renders as TWO backslashes (tested
+# 2026-11-03), which would turn SAFEMARCH\zmsadmin into SAFEMARCH\\zmsadmin.
+ad_backslash: "\\"
