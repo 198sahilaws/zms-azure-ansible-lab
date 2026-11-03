@@ -7,9 +7,10 @@
 - name: Resolve the application host from the inventory
   # sd_ring_peers keeps this client pointed at the web tier in its OWN ring, and
   # is a no-op in a single-ring estate — see vars/servicedesk.yml. It matters
-  # more here than anywhere else: a client aimed across the fence would generate
-  # nothing but timeouts, and the ring it was supposed to be exercising would
-  # look idle rather than broken.
+  # more here than anywhere else: a client aimed at another ring would send all
+  # its traffic there, and the ring it was supposed to be exercising would look
+  # idle rather than broken (or, once a host-level policy separates the rings,
+  # it would generate nothing but timeouts).
   ansible.builtin.set_fact:
     sd_app_host: >-
       {{ (groups[sd_app_group] | default([]))

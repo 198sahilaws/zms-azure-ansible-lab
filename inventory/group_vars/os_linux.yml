@@ -26,9 +26,8 @@ ansible_become_method: sudo
 # through a bastion by uncommenting the following and setting bastion_host.
 # Not needed in this lab: the control node sits inside the estate's VNet (its
 # own ansible-management subnet in web-app and web-app-adds, the management
-# subnet elsewhere) and every NSG keeps Azure's default AllowVnetInBound
-# (and, in the ring-fenced estate, an explicit allow from the shared /24s), so
-# private addressing works.
+# subnet elsewhere) and every NSG, the ring NSGs included, keeps Azure's
+# default AllowVnetInBound, so private addressing works.
 #
 # ansible_ssh_common_args: >-
 #   -o ProxyCommand="ssh -W %h:%p -q ubuntu@{{ bastion_host }}"

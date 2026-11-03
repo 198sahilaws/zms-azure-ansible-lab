@@ -86,8 +86,9 @@ sd_client_distro_group: os_linux
 # or three copies — prod, uat and dev each have their own web, middleware, db and
 # client — so `role_middleware | first` returns whichever host happens to sort
 # first across ALL rings, and PROD's web tier would be pointed at DEV's
-# middleware. The ring NSGs then drop the traffic, so the symptom is not a
-# subtle mis-wiring but two rings that are simply dead.
+# middleware. The ring NSGs are open, so that traffic would flow: rings would
+# silently share tiers, and the first host-level policy that separates rings
+# would turn the mis-wiring into two rings that are simply dead.
 #
 # THE FIX. Intersect every peer lookup with sd_ring_peers before taking `first`:
 #

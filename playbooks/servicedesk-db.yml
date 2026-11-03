@@ -101,9 +101,9 @@
         # THREE octets, not two. A /16 was adequate while one estate held one
         # copy of the app, but the ring-fenced estate puts prod, uat and dev in
         # one 10.90.0.0/16 — so '10.90.%' would authorise DEV's middleware
-        # against PROD's database. The ring NSGs drop that packet, but a
-        # grant looser than the fence is a trap for whoever loosens the fence
-        # next. A /24 is exactly one tier's subnet in one ring.
+        # against PROD's database. The ring NSGs are open to the whole VNet
+        # (no network fence), so this grant is what keeps each ring's data to
+        # its own middleware. A /24 is exactly one tier's subnet in one ring.
         #
         # Derived from the discovered address rather than a hardcoded CIDR, so
         # it is correct in every deployment (10.0/10.90/10.191/10.192) and

@@ -31,8 +31,9 @@
       # the reason that matters most. In a ring-fenced estate it runs once per
       # ring — each ring's client verifies its own web and middleware and no
       # others. Without the intersect, every ring's client would probe the same
-      # one web host, two of them across a fence they are not allowed to cross,
-      # and the run would report a broken application instead of a working fence.
+      # one web host, two of them in another ring, so the check would pass for
+      # rings whose own web tier was never tested (and fail outright once a
+      # host-level policy separates the rings).
       ansible.builtin.set_fact:
         sd_app_host: >-
           {{ (groups[sd_app_group] | default([]))
