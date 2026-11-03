@@ -2,13 +2,12 @@
 
 Ansible writes /etc/servicedesk/servicedesk.env and systemd passes it in via
 EnvironmentFile, so nothing here is hardcoded and nothing is read from a file
-this process would have to find. Same contract as the ZMS microservices app.
+this process would have to find.
 
 ONE PAYLOAD, TWO TIERS. The same /opt/servicedesk tree is installed on the
 middleware host and on the web host; SD_TIER decides which Flask app
-sdapp.wsgi exports. This mirrors the ZMS microservices lab, where one
-zmsapp payload becomes four services via ZMS_SERVICE, and it is why there is
-no second Ansible role: the tiers differ by environment, not by content.
+sdapp.wsgi exports. That is why there is no second Ansible role: the tiers
+differ by environment, not by content.
 
   SD_TIER=middleware  -> sdapp.api:app   owns MySQL, holds the credentials
   SD_TIER=web         -> sdapp.web:app   owns HTML, holds no credentials

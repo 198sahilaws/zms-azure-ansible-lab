@@ -15,7 +15,7 @@
 #
 # Order: distro package for that interpreter, then pip for that interpreter,
 # then a hard failure naming the interpreter. Used by playbooks/rhel-mariadb.yml,
-# playbooks/sles-mariadb.yml and the servicedesk_db and zms_app_db roles.
+# playbooks/sles-mariadb.yml and the servicedesk_db role.
 # Needs gathered facts.
 
 - name: Identify the interpreter Ansible modules run with

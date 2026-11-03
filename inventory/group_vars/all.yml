@@ -37,12 +37,12 @@ azure_client_id: "{{ lookup('ansible.builtin.env', 'AZURE_CLIENT_ID') | default(
 # --- Consolidated Ansible credentials secret -----------------------------------
 # Terraform (modules/secrets) creates ONE Key Vault secret per estate, named
 # <prefix>-<env>-ansible-credentials-<suffix> (hyphens: Key Vault rejects the
-# AWS "/"), holding one JSON document with exactly ten keys:
+# AWS "/"), holding one JSON document with exactly eight keys:
 #   ssh_private_key, winrm_username, winrm_password, dsrm_password,
 #   domain_join_username, domain_join_password, mysql_root_password,
-#   servicedesk_db_password, samba_password, zms_app_db_password
-# The tenth key, zms_app_db_password, is new on Azure; on AWS the ZMS app
-# account silently shared the MariaDB root password.
+#   servicedesk_db_password
+# (The AWS samba_password key went with the Linux file share, and the Azure
+# zms_app_db_password key with the ZMS microservices app.)
 ansible_secret_name: "{{ lookup('ansible.builtin.env', 'ANSIBLE_SECRET_NAME') | default('', true) }}"
 
 # NOTE: the decrypted secret is deliberately NOT bound to a global variable here.

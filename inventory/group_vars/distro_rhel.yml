@@ -1,7 +1,7 @@
 ---
 # Connection settings for RHEL hosts (inventory group distro_rhel, keyed off the
 # Distro tag Terraform sets). Covers RHEL 8, 9 and 10 — one group for all major
-# versions, because dnf / httpd / mariadb / samba behave the same across them.
+# versions, because dnf / httpd / mariadb behave the same across them.
 #
 # ansible_user is set directly here (and NOT in os_linux.yml) so the Distro group
 # is the single source of truth for the login user across the mixed estate — the

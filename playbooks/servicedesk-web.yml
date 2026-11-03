@@ -26,13 +26,12 @@
   vars:
     sd_tier: web
   pre_tasks:
-    # The web tier's hosts pattern (role_web & os_linux) also matches the
-    # web hosts of the ZMS microservices estate (deployments/custom),
-    # which has no middleware tier at all. Without this the role's
-    # "no middleware host" failure marks every hourly converge failed there.
-    # Same rule as zms-app-services.yml: an estate that has NO middleware group
-    # is not running this lab, so skip; an estate that has the group but the
-    # wrong distro or ring still reaches the role's hard failure.
+    # The web tier's hosts pattern (role_web & os_linux) matches any Linux web
+    # host, including one in an estate with no middleware tier. Without this
+    # the role's "no middleware host" failure would mark every hourly converge
+    # failed there. An estate that has NO middleware group is not running this
+    # lab, so skip; an estate that has the group but the wrong distro or ring
+    # still reaches the role's hard failure.
     - name: Skip estates that do not run the service desk
       ansible.builtin.meta: end_host
       when: (groups[sd_middleware_group] | default([])) | length == 0

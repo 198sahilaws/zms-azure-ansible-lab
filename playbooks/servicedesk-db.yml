@@ -46,11 +46,9 @@
       when: ansible_facts['os_family'] not in ['Debian', 'RedHat', 'Suse']
 
     # Same rule as servicedesk-web.yml: an estate with NO middleware host is not
-    # running the service desk (deployments/custom's default web + db pair is
-    # one), so leave its database alone. Without this the play created the
-    # sdapp account anyway, with a fallback grant of '10.0.0.%', which in the
-    # custom estate's 10.0.0.0/16 is the PUBLIC (bastion) subnet. An estate
-    # that has the group but no matching host fails below, with the reason.
+    # running the service desk, so leave its database alone rather than create
+    # an sdapp account with a guessed grant. An estate that has the group but
+    # no matching host fails below, with the reason.
     - name: Skip estates that do not run the service desk
       ansible.builtin.meta: end_host
       when: (groups[sd_middleware_group] | default([])) | length == 0
@@ -78,8 +76,8 @@
              | first | default('', true) }}
 
     - name: Fail when no middleware host matches this database host
-      # Previously this fell back to granting '10.0.0.%', a real subnet in the
-      # custom estate (its public tier). No guessed grant: say what is missing.
+      # Previously this fell back to granting '10.0.0.%', which can be a real
+      # subnet (a VNet's public tier). No guessed grant: say what is missing.
       ansible.builtin.fail:
         msg: >-
           {{ inventory_hostname }} would serve the service desk, but no host is in

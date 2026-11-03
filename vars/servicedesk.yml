@@ -3,8 +3,7 @@
 #
 # SINGLE SOURCE OF TRUTH for the application. Every servicedesk-*.yml playbook
 # loads this file via `vars_files`, so the host/port/schema map is declared once
-# and nothing is hardcoded in a task, template or unit file. Same contract as
-# vars/zms-app.yml.
+# and nothing is hardcoded in a task, template or unit file.
 #
 # WHY GROUP NAMES AND NOT IP ADDRESSES
 # The estate is discovered dynamically (inventory/azure_rm.yml, hostnames =
@@ -37,8 +36,7 @@
 #
 # ONE ROLE SERVES TWO TIERS. roles/servicedesk_app installs the same payload on
 # the web and middleware hosts; sd_tier (set per-play, not here) picks which
-# Flask app runs. Same idea as roles/zms_microservice being deployed four times
-# with different ZMS_SERVICE values.
+# Flask app runs.
 #
 # PORT 8090 DID NOT MOVE. It is still the front door and still on the Role=web
 # host, so sd-traffic.py, servicedesk-verify.yml, the runbook and every
@@ -62,8 +60,8 @@
 # (deployments/web-app-adds linux_distro / tier_os, the ring-fenced tier_os)
 # was silently left out and the whole app failed to wire up. os_linux keeps the
 # Windows hosts of an estate out, which is all the distro group has to do.
-# The ZMS microservices estate (deployments/custom) has no role_middleware
-# host, and every servicedesk play ends there before touching anything.
+# An estate with no role_middleware host does not run the service desk, and
+# every servicedesk play ends there before touching anything.
 sd_app_group: role_web
 sd_app_distro_group: os_linux
 
@@ -100,7 +98,7 @@ sd_client_distro_group: os_linux
 # group_names below is the CURRENT host's group list, not the control node's.
 #
 # INERT EVERYWHERE ELSE. Only the ring-fenced deployment tags instances with
-# AppEnv, so in adds / web-app / custom sd_ring_group resolves to '' and
+# AppEnv, so in adds / web-app / web-app-adds sd_ring_group resolves to '' and
 # sd_ring_peers falls back to every host in the inventory, making the extra
 # intersect a no-op. The appenv_* groups themselves come from the AppEnv
 # keyed_groups entry in inventory/azure_rm.yml.

@@ -46,8 +46,9 @@ ad_dns_forwarders:
 # join. Terraform publishes it as the VM tags ADDomain / ADNetBIOS where the
 # deployment lets you choose the domain (deployments/adds, default
 # safemarch.local, and deployments/web-app-adds, from their ad_domain_name
-# variable). Estates without those tags (custom) get the lab's original
-# forest, alcor.co.in / ALCOR, exactly as before.
+# variable). Every Windows estate now sets them; without the tags (a VM built
+# outside these deployments) the plays fall back to the lab's original forest,
+# alcor.co.in / ALCOR.
 #
 # Defined here, not as play vars: play vars outrank inventory variables, so a
 # play-level `ad_domain_name: alcor.co.in` would always win over the tag.

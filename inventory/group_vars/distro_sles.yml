@@ -13,7 +13,7 @@
 ansible_user: ec2-user
 
 # COVERS BOTH RELEASES: SLES 15 SP7 and SLES 16 share this group, because zypper,
-# apache2, mariadb and samba behave the same on both. Hosts are additionally
+# apache2 and mariadb behave the same on both. Hosts are additionally
 # placed in osver_15 / osver_16 (from the OSVersion tag) so a single release can
 # be targeted:
 #   ansible-playbook playbooks/sles-apache2.yml --limit 'role_web:&osver_16'
@@ -23,8 +23,8 @@ ansible_user: ec2-user
 #
 # KNOWN DIFFERENCE — SELinux. SLES 15 uses AppArmor; SLES 16 ships SELinux
 # enforcing by default. That does not affect apache2 or mariadb on default
-# paths, but a Samba share outside the standard directories needs an SELinux
-# context on SLES 16 (as on RHEL). See the note in playbooks/linux-fileshare.yml.
+# paths; anything served from a non-standard directory needs an SELinux
+# context on SLES 16 (as on RHEL).
 
 # --- Base-repo-safe package overrides ---------------------------------------
 # The baseline role defaults to [htop, curl, vim], but on SLES 15 `htop` is NOT

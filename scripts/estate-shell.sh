@@ -13,7 +13,7 @@
 # Usage (on the control node):
 #   sudo /opt/control-repo/scripts/estate-shell.sh                 # interactive shell
 #   sudo /opt/control-repo/scripts/estate-shell.sh ansible-inventory --graph
-#   sudo /opt/control-repo/scripts/estate-shell.sh ansible-playbook playbooks/zms-app-verify.yml
+#   sudo /opt/control-repo/scripts/estate-shell.sh ansible-playbook playbooks/servicedesk-verify.yml
 #   sudo /opt/control-repo/scripts/estate-shell.sh scripts/converge.sh --linux
 #
 # Runs as ubuntu, never as root: the SSH key, fact cache and log directory are

@@ -4,10 +4,9 @@
 #
 # ONE ROLE, TWO TIERS. This role installs the same payload on the middleware
 # host and on the web host; sd_tier decides which Flask app the unit runs, what
-# goes in the environment file, and which port it binds. It is the same pattern
-# as roles/zms_microservice, which is deployed four times with a different
-# ZMS_SERVICE each time — and the reason there is no separate
-# roles/servicedesk_middleware to keep in step with this one.
+# goes in the environment file, and which port it binds. That is the reason
+# there is no separate roles/servicedesk_middleware to keep in step with this
+# one.
 #
 #   sd_tier: middleware   sdapp.api:app   owns MySQL, runs schema + seed, :8091
 #   sd_tier: web          sdapp.web:app   owns HTML, no credentials,      :8090
@@ -112,7 +111,7 @@ sd_env_common:
   # Not read by any Python module — it is here so the deployed version is
   # greppable on the host (`grep SD_APP_VERSION /etc/servicedesk/servicedesk.env`)
   # and so that bumping sd_app_version rewrites this file, which notifies the
-  # restart handler. Same role as ZMS_VERSION in roles/zms_microservice.
+  # restart handler.
   SD_APP_VERSION: "{{ sd_app_version }}"
   # Non-secret, and the web tier names it in its error pages, so both get it.
   SD_DB_NAME: "{{ sd_db_name }}"

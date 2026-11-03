@@ -1,7 +1,6 @@
 """WSGI entrypoint. gunicorn loads sdapp.wsgi:app (see the systemd unit).
 
-One payload, two tiers, selected by SD_TIER — the same trick zmsapp.wsgi uses
-with ZMS_SERVICE. Both hosts get an identical /opt/servicedesk tree and an
+One payload, two tiers, selected by SD_TIER. Both hosts get an identical /opt/servicedesk tree and an
 identical unit file; only the environment differs. That is what makes the
 "promote a host to a different tier" exercise a one-line env change rather
 than a redeploy.

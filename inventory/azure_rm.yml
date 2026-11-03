@@ -58,8 +58,8 @@ exclude_host_filters:
 
 # --- Host names and addresses --------------------------------------------------
 # Inventory hostname = primary private IP, exactly as on AWS
-# (hostnames: private-ip-address). This is load-bearing: vars/zms-app.yml,
-# vars/servicedesk.yml and the AD plays build peer URLs and DNS server
+# (hostnames: private-ip-address). This is load-bearing: vars/servicedesk.yml
+# and the AD plays build peer URLs and DNS server
 # addresses from inventory hostnames, so they must be IPs.
 hostnames:
   - private_ipv4_addresses | first

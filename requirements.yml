@@ -56,8 +56,8 @@ collections:
     version: ">=1.4.0,<2.0.0"
   - name: community.general
     version: ">=7.0.0,<12.0.0"
-  # MySQL/MariaDB modules (ubuntu-mysql, rhel/sles-mariadb, servicedesk_db,
-  # zms_app_db). community.mysql is retired: 4.3 deprecates every module,
+  # MySQL/MariaDB modules (ubuntu-mysql, rhel/sles-mariadb, servicedesk_db).
+  # community.mysql is retired: 4.3 deprecates every module,
   # 5.x ships none (only redirects here), and 3.x imports
   # ansible.module_utils._text, which ansible-core removes in 2.24. The
   # modules moved to ansible.mysql unchanged; the repo calls them by their
