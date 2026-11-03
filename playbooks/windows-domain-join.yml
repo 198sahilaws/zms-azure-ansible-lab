@@ -59,11 +59,18 @@
     # Add-Computer fails with a UPN as "A specified logon session does not
     # exist" (Win32 1312), confirmed on Azure 2026-11-03 for the RODC join;
     # SAFEMARCH\zmsadmin joined and promoted at once. A domain_join_username
-    # given as user@<this forest> is rewritten the same way; any other form
-    # (DOMAIN\user, or a UPN from another domain) is passed through as is.
+    # given as user@<this forest> is rewritten the same way, and so is a bare
+    # name ("zmsadmin"): with no domain, Add-Computer authenticates it as the
+    # LOCAL account and fails with "Unable to update the password. The value
+    # provided as the current password is incorrect" (Win32 1323). Only
+    # DOMAIN\user and a UPN from another domain are passed through as is.
     domain_admin_user: >-
       {{ (ad_domain_netbios ~ ad_backslash ~ (domain_join_user_secret | regex_replace('@.*$', '')))
            if (domain_join_user_secret | lower).endswith('@' ~ (ad_domain_name | lower))
+         else (ad_domain_netbios ~ ad_backslash ~ domain_join_user_secret)
+           if (domain_join_user_secret | length > 0
+               and ad_backslash not in domain_join_user_secret
+               and '@' not in domain_join_user_secret)
          else domain_join_user_secret if domain_join_user_secret | length > 0
          else ((ad_domain_netbios ~ ad_backslash ~ domain_admin_account) if domain_admin_account | length > 0 else '') }}
     domain_admin_password: >-
