@@ -192,20 +192,35 @@ esac
 FAILED=()
 PASSED=()
 
+# Hosts a playbook skipped because they were unreachable. The plays deliberately
+# tolerate that (ignore_unreachable + meta: end_host), so ansible-playbook exits
+# 0 and the run would otherwise be logged as a plain success while, say, every
+# domain controller was skipped. Collected from each playbook's output:
+# host -> the playbooks that skipped it.
+declare -A UNREACHABLE=()
+PLAY_OUT="$(mktemp)"
+trap 'rm -f "$PLAY_OUT"' EXIT
+
 for play in "${PLAYS[@]}"; do
   [ -f "$play" ] || { echo "SKIP (missing): $play"; continue; }
   echo "=============================================================="
   echo ">>> $play"
   echo "=============================================================="
+  # tee keeps the output in the journal as before; pipefail (set above) keeps
+  # ansible-playbook's exit status as the pipeline's.
   if ansible-playbook "$play" \
         -e "rolling_batch=${ROLLING_BATCH}" \
-        -e "max_fail_pct=${MAX_FAIL_PCT}"; then
+        -e "max_fail_pct=${MAX_FAIL_PCT}" 2>&1 | tee "$PLAY_OUT"; then
     PASSED+=("$play")
   else
     rc=$?
     echo "!!! FAILED (exit ${rc}): $play — continuing with the remaining playbooks"
     FAILED+=("$play")
   fi
+  while read -r host; do
+    [ -n "$host" ] || continue
+    UNREACHABLE["$host"]+="${UNREACHABLE[$host]:+,}$(basename "$play" .yml)"
+  done < <(grep -o 'fatal: \[[^]]*\]: UNREACHABLE!' "$PLAY_OUT" | sed 's/^fatal: \[\(.*\)\]: UNREACHABLE!$/\1/' | sort -u)
 done
 
 echo
@@ -214,7 +229,21 @@ printf 'passed : %s\n' "${#PASSED[@]}"
 for p in "${PASSED[@]}"; do printf '   ok   %s\n' "$p"; done
 printf 'failed : %s\n' "${#FAILED[@]}"
 for p in "${FAILED[@]}"; do printf '   FAIL %s\n' "$p"; done
+printf 'unreachable hosts : %s\n' "${#UNREACHABLE[@]}"
+for h in $(printf '%s\n' "${!UNREACHABLE[@]}" | sort); do
+  printf '   SKIP %s (%s)\n' "$h" "${UNREACHABLE[$h]}"
+done
 echo "==================================================="
+
+# Hand the unreachable hosts to notify-result.sh (the unit's ExecStopPost),
+# which logs this run as result=partial. Only under systemd (INVOCATION_ID is
+# set by it): a manual run must not leave a file for the next timed run's hook
+# to pick up. notify-result.sh deletes it once read.
+if [ -n "${INVOCATION_ID:-}" ]; then
+  LOG_DIR="${ANSIBLE_LOG_DIR:-/var/log/ansible}"
+  hosts_csv="$(printf '%s\n' "${!UNREACHABLE[@]}" | sort | paste -sd, -)"
+  printf 'UNREACHABLE_HOSTS=%s\n' "$hosts_csv" > "$LOG_DIR/.estate-last-run" 2>/dev/null || true
+fi
 
 # Non-zero if anything failed, so systemd + notify-result.sh still flag it.
 [ "${#FAILED[@]}" -eq 0 ] || exit 1
