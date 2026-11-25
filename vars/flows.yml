@@ -1,0 +1,85 @@
+---
+# vars/flows.yml - settings shared by the flow-test playbooks:
+#   flow-exercise.yml  Table 5 allowed flows F1-F3, F7-F10
+#   flow-internet.yml  HTTPS to the sites below (F10; the client is tested against Table 5)
+#   flow-bastion.yml   F5 (SSH) and F6 (RDP) from the Windows and/or Linux bastion, plus N6
+#   flow-negative.yml  flows Table 5 denies (N1-N5)
+# Manual use only. scripts/flow-test.sh runs them in one command (learn | verify).
+#
+# Negative flow IDs:
+#   N1  any host -> Internet on a non-443 port (portquiz.net:666)
+#   N2  any host -> Internet on plain HTTP 80 (neverssl.com, httpforever.com)
+#   N3  web/middleware/db -> other Linux hosts (incl. the Linux bastion) SSH 22
+#   N4  web/middleware/db -> Windows hosts (DCs, Windows bastion) RDP 3389
+#   N5  web -> db TCP 3306 (skipping the middleware tier)
+#   N6  bastion -> app ports and DC WinRM/SMB (flow-bastion.yml)
+#   N7  client -> Internet HTTPS (Intranet Users are not an F10 source)
+
+# ---- Phase -----------------------------------------------------------------------------
+# '' (a playbook run on its own) | learn | verify. Set by scripts/flow-test.sh.
+#   learn   allowed flows only, several rounds: safe while ZMS learns flows
+#   verify  allowed and denied flows once, and a denied flow that connects fails the run
+flow_phase: ""
+flow_mode: "{{ {'learn': 'positive', 'verify': 'all'}[flow_phase] | default('positive') }}"
+flow_enforced: "{{ flow_phase == 'verify' }}"
+flow_rounds: "{{ 6 if flow_phase == 'learn' else 1 }}"
+flow_interval: 30            # seconds between rounds
+flow_timeout: 5              # seconds per connect / read
+
+# ---- Output ------------------------------------------------------------------------------
+flow_log_file: /var/log/ansible/flow-exercise.log
+
+# ---- F10 and the internet sites ----------------------------------------------------------
+flow_f10_url: https://github.com/
+flow_internet_sites:
+  - https://www.google.com/
+  - https://www.zscaler.com/
+  - https://cnn.com/
+  - https://github.com/198sahilaws/
+  - https://ip.zscaler.com/
+# Table 5: Intranet Users (the client) are not an F10 source, so their HTTPS is expected to be
+# denied (N7) and only runs when negatives are included. Set to 'allow' if the client should
+# browse; its probes then run as F10 in every phase.
+flow_client_internet: deny
+# false skips certificate checks (e.g. ZIA SSL inspection without the Zscaler root CA installed)
+flow_validate_certs: true
+
+# ---- Negative flows ----------------------------------------------------------------------
+flow_negative_urls:
+  - {id: N1, url: "http://portquiz.net:666/"}
+  - {id: N2, url: "http://neverssl.com/"}
+  - {id: N2, url: "http://httpforever.com/"}
+flow_lateral_source_roles: [web, middleware, db]
+flow_lateral_linux_pattern: "role_web:role_middleware:role_db:role_client:role_ansible_control"
+flow_lateral_windows_pattern: "role_dc:role_adc:role_rodc:os_bastion"
+
+# ---- Bastions ----------------------------------------------------------------------------
+# Both bastions are tagged Role=bastion (Terraform modules/bastion, modules/bastion-windows);
+# only the Windows one also has OS=bastion. So:
+#   Windows bastion = os_bastion        Linux bastion = role_bastion minus os_bastion
+flow_bastion_group: os_bastion
+# Override the Linux bastion with -e flow_linux_bastion=<private IP> (comma-separated for several).
+flow_linux_bastion: ""
+flow_linux_bastions: >-
+  {{ (flow_linux_bastion.split(',') | map('trim') | select | list) if (flow_linux_bastion | default('') | length > 0)
+     else ((groups['role_bastion'] | default([])) | difference(groups[flow_bastion_group] | default([]))) }}
+# Terraform modules/bastion: admin_username "ubuntu", the estate SSH key (the control node's key)
+flow_linux_bastion_user: ubuntu
+# F5 targets (SSH) and F6 targets (RDP) for both bastions
+flow_bastion_ssh_roles: [web, middleware, db, client, ansible_control]
+flow_bastion_rdp_roles: [dc, adc, rodc]
+# N6: ports the bastions must not reach, by target role
+flow_bastion_negative_ports:
+  web: [8090]
+  middleware: [8091]
+  db: [3306]
+  dc: [5986, 445]
+  adc: [5986, 445]
+  rodc: [5986, 445]
+
+# ---- Inventory ---------------------------------------------------------------------------
+flow_linux_pattern: "role_web:role_middleware:role_db:role_client:role_ansible_control:&os_linux"
+flow_dc_pattern: "role_dc:role_adc:role_rodc:&os_windows"
+# Union of both, for plays that run on Linux and Windows (Ansible applies every &term to the
+# whole pattern, so the two patterns above cannot simply be joined)
+flow_all_pattern: "role_web:role_middleware:role_db:role_client:role_ansible_control:role_dc:role_adc:role_rodc"

@@ -1,0 +1,43 @@
+---
+# tasks/flow-run.yml - run this host's probe plan with the right engine, then record the results.
+# Input: flow_plan (list of probes, see files/flow-probe.py), flow_playbook_name.
+# Linux: files/flow-probe.py through the script module (copied to the remote temp dir, removed after).
+# Windows: files/flow-probe.ps1 through win_powershell.
+
+- name: Run probes from {{ inventory_hostname }}
+  when: flow_plan | default([]) | length > 0
+  block:
+    - name: Run flow-probe.py (Linux)
+      ansible.builtin.script:
+        cmd: >-
+          files/flow-probe.py {{ {'timeout': flow_timeout | int, 'rounds': flow_rounds | int,
+          'interval': flow_interval | int, 'enforced': flow_enforced | bool,
+          'probes': flow_plan} | to_json | b64encode }}
+        executable: "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
+      register: flow_probe_linux
+      changed_when: false
+      when: "'os_windows' not in group_names"
+      vars:
+        ansible_become: false   # plain sockets; no root needed
+
+    - name: Run flow-probe.ps1 (Windows)
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', 'files/flow-probe.ps1') }}"
+        parameters:
+          Plan: "{{ flow_plan }}"
+          TimeoutMs: "{{ (flow_timeout | int) * 1000 }}"
+          Rounds: "{{ flow_rounds | int }}"
+          IntervalSeconds: "{{ flow_interval | int }}"
+          Enforced: "{{ flow_enforced | bool }}"
+      register: flow_probe_windows
+      changed_when: false
+      when: "'os_windows' in group_names"
+
+    - name: Collect the probe results
+      ansible.builtin.set_fact:
+        flow_new_results: >-
+          {{ (flow_probe_windows.output | default([])) if 'os_windows' in group_names
+             else (flow_probe_linux.stdout | from_json) }}
+
+    - name: Record the probe results
+      ansible.builtin.include_tasks: flow-record.yml

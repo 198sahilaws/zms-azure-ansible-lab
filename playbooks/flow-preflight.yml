@@ -1,0 +1,52 @@
+---
+# flow-preflight.yml - imported at the top of every flow-test playbook. Not run on its own.
+# Stops the run while a converge or reconverge holds the run lock (probing hosts mid-change
+# gives false failures), fixes one run ID for the log, and prints the phase.
+
+- name: Flow tests | pre-flight
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    flow_lock_file: >-
+      {{ lookup('ansible.builtin.env', 'CONTROL_REPO_DIR') | default('/opt/control-repo', true) }}/.git/zms-ansible.lock
+  tasks:
+    - name: Check whether a converge or reconverge holds the run lock
+      ansible.builtin.command:
+        argv: [flock, --nonblock, "{{ flow_lock_file }}", "true"]
+      register: flow_lock_probe
+      changed_when: false
+      failed_when: false
+      when: not (flow_ignore_lock | default(false) | bool)
+
+    - name: Fix the run ID and record the lock state
+      ansible.builtin.set_fact:
+        flow_run_id_fixed: "{{ flow_run_id | default(now(fmt='%Y%m%dT%H%M%S')) }}"
+        flow_lock_held: "{{ flow_lock_probe is not skipped and flow_lock_probe.rc != 0 }}"
+
+    - name: Stop while a converge is running
+      ansible.builtin.fail:
+        msg: >-
+          A converge or reconverge holds {{ flow_lock_file }}. Wait for it to finish
+          (tail /var/log/ansible/converge-status.log), or re-run with -e flow_ignore_lock=true.
+      when: flow_lock_held | bool
+
+    - name: Validate the settings
+      ansible.builtin.assert:
+        that:
+          - flow_phase | default('', true) in ['', 'learn', 'verify']
+          - flow_mode in ['positive', 'negative', 'all']
+          - flow_rounds | int >= 1
+          - flow_timeout | int >= 1
+        fail_msg: >-
+          Invalid setting: flow_phase must be learn or verify (got '{{ flow_phase }}'), flow_mode
+          positive, negative or all (got '{{ flow_mode }}'), flow_rounds and flow_timeout at least 1.
+        quiet: true
+
+    - name: Phase
+      ansible.builtin.debug:
+        msg: >-
+          run={{ flow_run_id_fixed }} phase={{ flow_phase | default('', true) or 'standalone' }}
+          mode={{ flow_mode }} enforced={{ flow_enforced | bool }} rounds={{ flow_rounds }}

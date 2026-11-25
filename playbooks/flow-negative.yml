@@ -1,0 +1,91 @@
+---
+# flow-negative.yml - flows Table 5 denies. Manual use only.
+#
+#   N1  every host -> portquiz.net:666 (HTTP on a non-443 port)
+#   N2  every host -> neverssl.com:80, httpforever.com:80 (plain HTTP)
+#   N3  web, middleware, db -> every other Linux host incl. the Linux bastion, SSH 22 (banner exchange, no login)
+#   N4  web, middleware, db -> DCs and the Windows bastion, RDP 3389 (connection request, no login)
+#   N5  web -> db 3306 (MySQL greeting, no login): skipping the middleware tier
+#   (N6 bastion negatives are in flow-bastion.yml; N7 client HTTPS is in flow-internet.yml)
+#
+# Every target port has a listener, so a failure to connect is the policy, not a closed port.
+# Before enforcement every probe connects and is reported INFO. With flow_enforced=true
+# (flow-test.sh verify) a connection fails the run.
+#
+# DO NOT run this while ZMS is learning flows for policy recommendations: these flows would land
+# in the same flow data as the real ones.
+#
+# Usage (on the control node):
+#   sudo /opt/control-repo/scripts/estate-shell.sh ansible-playbook playbooks/flow-negative.yml
+#   ... -e flow_enforced=true       (after enforcement: fail if anything denied connects)
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: flow-preflight.yml
+
+- name: Flow tests | warn about the learning window
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../vars/flows.yml
+  tasks:
+    - name: Negative flows before enforcement
+      ansible.builtin.debug:
+        msg: >-
+          flow_enforced is false: every denied flow is expected to connect (INFO). Do not run this
+          while ZMS is learning flows for policy recommendations.
+      when: not (flow_enforced | bool)
+
+- name: Flow tests | denied flows from the Linux hosts and DCs
+  hosts: "{{ target | default(flow_all_pattern) }}"
+  gather_facts: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    flow_playbook_name: flow-negative
+    flow_self_label: >-
+      {{ group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default('host') }}
+    flow_is_lateral_source: >-
+      {{ group_names | intersect(flow_lateral_source_roles | map('regex_replace', '^', 'role_') | list) | length > 0 }}
+    flow_linux_targets: >-
+      {{ (query('ansible.builtin.inventory_hostnames', flow_lateral_linux_pattern) + flow_linux_bastions)
+         | unique | reject('equalto', inventory_hostname) | list }}
+    flow_windows_targets: >-
+      {{ query('ansible.builtin.inventory_hostnames', flow_lateral_windows_pattern) | reject('equalto', inventory_hostname) | list }}
+  tasks:
+    - name: End here if pre-flight found the converge lock held
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['flow_lock_held'] | default(false) | bool
+
+    - name: Build this host's probe plan
+      ansible.builtin.set_fact:
+        flow_plan: >-
+          {%- set out = [] -%}
+          {%- for n in flow_negative_urls -%}
+          {%-   set _ = out.append({'flow': n.id, 'target': n.url | urlsplit('hostname'), 'url': n.url,
+                  'probe': 'http', 'expect': 'deny'}) -%}
+          {%- endfor -%}
+          {%- if flow_is_lateral_source | bool -%}
+          {%-   for h in flow_linux_targets -%}
+          {%-     set _ = out.append({'flow': 'N3', 'address': h, 'port': 22, 'probe': 'ssh', 'expect': 'deny',
+                    'target': ('bastion-linux' if h in flow_linux_bastions else
+                               hostvars[h].group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default(h))}) -%}
+          {%-   endfor -%}
+          {%-   for h in flow_windows_targets -%}
+          {%-     set _ = out.append({'flow': 'N4', 'address': h, 'port': 3389, 'probe': 'rdp', 'expect': 'deny',
+                    'target': ('bastion-windows' if flow_bastion_group in hostvars[h].group_names else
+                               hostvars[h].group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default(h))}) -%}
+          {%-   endfor -%}
+          {%- endif -%}
+          {%- if 'role_web' in group_names -%}
+          {%-   for h in groups['role_db'] | default([]) -%}
+          {%-     set _ = out.append({'flow': 'N5', 'target': 'db', 'address': h, 'port': 3306, 'probe': 'mysql', 'expect': 'deny'}) -%}
+          {%-   endfor -%}
+          {%- endif -%}
+          {{ out }}
+
+    - name: Run the probes
+      ansible.builtin.include_tasks: tasks/flow-run.yml
+
+- name: Report
+  ansible.builtin.import_playbook: flow-report.yml

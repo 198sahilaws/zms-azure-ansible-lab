@@ -1,0 +1,50 @@
+---
+# flow-report.yml - imported at the end of every flow-test playbook. Not run on its own.
+# Summarises the results of this run and fails the run if any probe failed.
+
+- name: Flow tests | report
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../vars/flows.yml
+  tasks:
+    - name: Gather this run's results from every host
+      ansible.builtin.set_fact:
+        flow_all: >-
+          {{ groups['all'] | map('extract', hostvars) | selectattr('flow_results', 'defined')
+             | map(attribute='flow_results') | flatten }}
+
+    - name: Count by flow and verdict
+      ansible.builtin.set_fact:
+        flow_counts: >-
+          {%- set out = [] -%}
+          {%- for flow in flow_all | map(attribute='Flow') | unique | sort -%}
+          {%- set rows = flow_all | selectattr('Flow', 'equalto', flow) | list -%}
+          {%- set _ = out.append(flow ~ ': '
+                ~ (rows | selectattr('Verdict', 'equalto', 'PASS') | list | length) ~ ' pass, '
+                ~ (rows | selectattr('Verdict', 'equalto', 'FAIL') | list | length) ~ ' fail, '
+                ~ (rows | selectattr('Verdict', 'equalto', 'INFO') | list | length) ~ ' denied-but-open') -%}
+          {%- endfor -%}
+          {{ out }}
+        flow_failed: "{{ flow_all | selectattr('Verdict', 'equalto', 'FAIL') | list }}"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ [ (flow_all | length) ~ ' probes, ' ~ (flow_failed | length) ~ ' failed. Log: ' ~ flow_log_file
+                ~ ' (grep run=' ~ (flow_run_id_fixed | default('')) ~ ')' ] + flow_counts }}
+
+    - name: Denied flows connected before enforcement
+      ansible.builtin.debug:
+        msg: >-
+          {{ flow_all | selectattr('Verdict', 'equalto', 'INFO') | list | length }} denied flow(s) connected.
+          Expected until ZMS enforces; run verify (or -e flow_enforced=true) afterwards.
+      when: flow_all | selectattr('Verdict', 'equalto', 'INFO') | list | length > 0
+
+    - name: Fail the run if any probe failed
+      ansible.builtin.fail:
+        msg: >-
+          {{ flow_failed | length }} probe(s) failed:
+          {% for r in flow_failed %}[{{ r.Flow }} {{ r.Src }} -> {{ r.Target }} {{ r.Address }}:{{ r.Port }} {{ r.Result }}] {% endfor %}
+      when: flow_failed | length > 0

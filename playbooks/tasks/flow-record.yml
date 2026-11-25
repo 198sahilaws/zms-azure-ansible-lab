@@ -1,0 +1,48 @@
+---
+# tasks/flow-record.yml - append this host's new results to the run and the log.
+# Input: flow_new_results (list of result objects from flow-probe.py / flow-probe.ps1 /
+# flow-bastion.ps1, or rows built in the playbook) and flow_playbook_name.
+
+- name: Tag the results with the playbook, source and run
+  ansible.builtin.set_fact:
+    flow_tagged: >-
+      {{ flow_new_results | default([])
+         | map('combine', {'Playbook': flow_playbook_name,
+                           'Src': flow_self_label ~ '/' ~ inventory_hostname,
+                           'Run': hostvars['localhost']['flow_run_id_fixed'] | default('')})
+         | list }}
+
+- name: Add them to this host's results for the report
+  ansible.builtin.set_fact:
+    flow_results: "{{ flow_results | default([]) + flow_tagged }}"
+
+- name: Format log lines
+  ansible.builtin.set_fact:
+    flow_lines: >-
+      {%- set out = [] -%}
+      {%- for r in flow_tagged -%}
+      {%- set _ = out.append(r.Time ~ ' run=' ~ r.Run ~ ' playbook=' ~ r.Playbook ~ ' verdict=' ~ r.Verdict
+            ~ ' flow=' ~ r.Flow ~ ' src=' ~ r.Src ~ ' dst=' ~ r.Target ~ ' ' ~ r.Address ~ ':' ~ r.Port
+            ~ ' expect=' ~ r.Expect ~ ' result=' ~ r.Result ~ ' ms=' ~ r.Ms ~ ' round=' ~ r.Round
+            ~ ' detail="' ~ (r.Detail | string | replace('"', "'") | regex_replace('\\s+', ' ') | trim) ~ '"') -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Results from {{ inventory_hostname }}
+  ansible.builtin.debug:
+    msg: "{{ flow_lines }}"
+  when: flow_lines | length > 0
+
+- name: Append the lines to the log on the control node
+  ansible.builtin.command:
+    argv: [tee, -a, "{{ flow_log_file }}"]
+    stdin: "{{ flow_lines | join('\n') }}"
+  delegate_to: localhost
+  throttle: 1
+  changed_when: false
+  when: flow_lines | length > 0
+  vars:
+    # Task vars outrank a play's connection settings, which would otherwise follow the delegation.
+    ansible_connection: local
+    ansible_become: false
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"

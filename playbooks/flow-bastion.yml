@@ -1,0 +1,235 @@
+---
+# flow-bastion.yml - Table 5 flows F5 (SSH) and F6 (RDP), originated by the bastion(s), plus
+# the bastions' denied flows (N6). Runs from whichever bastions the estate has
+# (bastion_type = linux | windows | both). Manual use only.
+#
+#   F5  bastion -> web, middleware, db, client, control node: SSH 22 (banner exchange, no login)
+#   F6  bastion -> DCs: RDP 3389 (connection request + negotiation, no login)
+#   N6  bastion -> web 8090, middleware 8091, db 3306, DCs 5986 and 445   (flow_mode negative | all)
+#
+# Finding the bastions: Terraform tags both Role=bastion; only the Windows one also has OS=bastion.
+#   Windows bastion  group os_bastion                  -> WinRM, runs files/flow-bastion.ps1
+#   Linux bastion    role_bastion minus os_bastion     -> SSH as ubuntu, runs files/flow-probe.py
+# Override the Linux one with -e flow_linux_bastion=<private IP>. Limit to one kind with
+# -e flow_bastion_kinds=linux (or windows).
+#
+# Prerequisites and policy notes:
+#   Linux bastion    Reached over SSH as ubuntu with the estate key (Terraform modules/bastion),
+#                    so nothing to set up. Uses Ansible RG -> Bastion RG TCP 22 (not in Table 5).
+#   Windows bastion  Terraform deliberately gives it no WinRM listener (modules/bastion-windows):
+#                    run the workloads' winrm-bootstrap.ps1 on it (Run Command) once. Its admin is
+#                    the account in the Key Vault secret. Uses Ansible RG -> Bastion RG TCP 5986.
+#   Both management flows appear in the learning data. Allow them in the ZMS policy, or this
+#   playbook stops working once ZMS enforces.
+#
+# Usage (on the control node):
+#   sudo /opt/control-repo/scripts/estate-shell.sh ansible-playbook playbooks/flow-bastion.yml
+#   ... -e flow_mode=all -e flow_enforced=true     (after enforcement)
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: flow-preflight.yml
+
+- name: Flow tests | find the bastions
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    flow_bastion_kinds: [windows, linux]
+    flow_windows_found: "{{ groups[flow_bastion_group] | default([]) if 'windows' in flow_bastion_kinds else [] }}"
+    flow_linux_found: "{{ flow_linux_bastions if 'linux' in flow_bastion_kinds else [] }}"
+  tasks:
+    - name: Put the Linux bastion(s) in a working group
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: flow_linux_bastion
+      loop: "{{ flow_linux_found }}"
+      changed_when: false
+
+    - name: Bastions found
+      ansible.builtin.debug:
+        msg:
+          - "Windows bastion (WinRM): {{ flow_windows_found | join(', ') or 'none' }}"
+          - "Linux bastion (SSH):     {{ flow_linux_found | join(', ') or 'none' }}"
+
+    - name: Require at least one bastion
+      ansible.builtin.assert:
+        that: (flow_windows_found | length) + (flow_linux_found | length) > 0
+        fail_msg: >-
+          No bastion found, so F5/F6 cannot run. The estate needs bastion_type = linux, windows or
+          both; check: sudo /opt/control-repo/scripts/estate-shell.sh ansible-inventory --graph role_bastion
+        quiet: true
+
+- name: Flow tests | Windows bastion (F5, F6, N6)
+  hosts: "{{ flow_bastion_group }}"
+  gather_facts: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    # The Windows bastion has no group_vars (OS=bastion), so its WinRM settings live here.
+    # Same values as group_vars/os_windows.yml.
+    ansible_connection: winrm
+    ansible_port: 5986
+    ansible_winrm_scheme: https
+    ansible_winrm_transport: ntlm
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_message_encryption: auto
+    ansible_become: false
+    ansible_user: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+           vault_url=azure_keyvault_url, client_id=azure_client_id)
+         | from_json).winrm_username | default('', true) }}
+    ansible_password: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+           vault_url=azure_keyvault_url, client_id=azure_client_id)
+         | from_json).winrm_password | default('', true) }}
+
+    flow_playbook_name: flow-bastion
+    flow_self_label: bastion-windows
+    flow_bastion_kinds: [windows, linux]
+  tasks:
+    - name: End here if pre-flight found the converge lock held, or Windows was not asked for
+      ansible.builtin.meta: end_play
+      when: >-
+        (hostvars['localhost']['flow_lock_held'] | default(false) | bool)
+        or 'windows' not in flow_bastion_kinds
+
+    # Name -> IP maps from the inventory. Inventory hostnames are private IPs.
+    # One host in a role is keyed by the role ("web"); several are "web-<ip>" (ring fence).
+    - name: Collect F5 SSH targets from the inventory
+      ansible.builtin.set_fact:
+        flow_ssh_targets: "{{ flow_ssh_targets | default({}) | combine(_entry) }}"
+      vars:
+        _hosts: "{{ groups['role_' ~ item] | default([]) | sort }}"
+        _entry: >-
+          {{ {item: _hosts[0]} if (_hosts | length) == 1
+             else dict(_hosts | map('regex_replace', '^', item ~ '-') | zip(_hosts)) }}
+      loop: "{{ flow_bastion_ssh_roles }}"
+      when: (groups['role_' ~ item] | default([])) | length > 0
+
+    - name: Collect F6 RDP targets from the inventory
+      ansible.builtin.set_fact:
+        flow_rdp_targets: "{{ flow_rdp_targets | default({}) | combine(_entry) }}"
+      vars:
+        _hosts: "{{ groups['role_' ~ item] | default([]) | sort }}"
+        _entry: >-
+          {{ {item: _hosts[0]} if (_hosts | length) == 1
+             else dict(_hosts | map('regex_replace', '^', item ~ '-') | zip(_hosts)) }}
+      loop: "{{ flow_bastion_rdp_roles }}"
+      when: (groups['role_' ~ item] | default([])) | length > 0
+
+    - name: Stop if the inventory has no targets
+      ansible.builtin.assert:
+        that: (flow_ssh_targets | default({}) | length) + (flow_rdp_targets | default({}) | length) > 0
+        fail_msg: >-
+          No role_* hosts found for {{ flow_bastion_ssh_roles + flow_bastion_rdp_roles }}. Check:
+          sudo /opt/control-repo/scripts/estate-shell.sh ansible-inventory --graph
+        quiet: true
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg:
+          - "Mode: {{ flow_mode }}{{ ' (enforced)' if flow_enforced | bool else '' }}, {{ flow_rounds }} round(s)"
+          - "F5 SSH targets: {{ flow_ssh_targets | default({}) }}"
+          - "F6 RDP targets: {{ flow_rdp_targets | default({}) }}"
+
+    - name: Warn about N6 before enforcement
+      ansible.builtin.debug:
+        msg: >-
+          Negative probes (N6) are included and flow_enforced is false. Do not run them while ZMS is
+          learning flows for policy recommendations.
+      when:
+        - flow_mode != 'positive'
+        - not (flow_enforced | bool)
+
+    - name: Run flow-bastion.ps1 on the Windows bastion
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', 'files/flow-bastion.ps1') }}"
+        parameters:
+          SshTargets: "{{ flow_ssh_targets | default({}) }}"
+          RdpTargets: "{{ flow_rdp_targets | default({}) }}"
+          NegativePorts: "{{ flow_bastion_negative_ports }}"
+          Mode: "{{ flow_mode | capitalize }}"
+          Enforced: "{{ flow_enforced | bool }}"
+          Rounds: "{{ flow_rounds | int }}"
+          IntervalSeconds: "{{ flow_interval | int }}"
+          TimeoutMs: "{{ (flow_timeout | int) * 1000 }}"
+          PassThru: true
+      register: flow_bastion
+      changed_when: false
+
+    - name: Record the results
+      ansible.builtin.include_tasks: tasks/flow-record.yml
+      vars:
+        flow_new_results: "{{ flow_bastion.output | default([]) }}"
+
+- name: Flow tests | Linux bastion (F5, F6, N6)
+  hosts: flow_linux_bastion
+  gather_facts: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    # The Linux bastion has no OS tag, so no os_linux group_vars: connection settings live here.
+    # The SSH key comes from group_vars/all.yml (the estate key Terraform also gave the bastion).
+    ansible_connection: ssh
+    ansible_user: "{{ flow_linux_bastion_user }}"
+    ansible_become: false
+    ansible_python_interpreter: /usr/bin/python3
+    flow_playbook_name: flow-bastion
+    flow_self_label: bastion-linux
+    flow_bastion_kinds: [windows, linux]
+    flow_wanted: "{{ {'positive': ['allow'], 'negative': ['deny'], 'all': ['allow', 'deny']}[flow_mode] }}"
+  tasks:
+    - name: End here if pre-flight found the converge lock held
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['flow_lock_held'] | default(false) | bool
+
+    - name: Build the probe plan
+      ansible.builtin.set_fact:
+        flow_plan: >-
+          {%- set out = [] -%}
+          {%- if 'allow' in flow_wanted -%}
+          {%-   for r in flow_bastion_ssh_roles -%}
+          {%-     for h in groups['role_' ~ r] | default([]) | sort -%}
+          {%-       set _ = out.append({'flow': 'F5', 'target': r, 'address': h, 'port': 22, 'probe': 'ssh', 'expect': 'allow'}) -%}
+          {%-     endfor -%}
+          {%-   endfor -%}
+          {%-   for r in flow_bastion_rdp_roles -%}
+          {%-     for h in groups['role_' ~ r] | default([]) | sort -%}
+          {%-       set _ = out.append({'flow': 'F6', 'target': r, 'address': h, 'port': 3389, 'probe': 'rdp', 'expect': 'allow'}) -%}
+          {%-     endfor -%}
+          {%-   endfor -%}
+          {%- endif -%}
+          {%- if 'deny' in flow_wanted -%}
+          {%-   for e in flow_bastion_negative_ports | dict2items -%}
+          {%-     for h in groups['role_' ~ e.key] | default([]) | sort -%}
+          {%-       for p in e.value -%}
+          {%-         set _ = out.append({'flow': 'N6', 'target': e.key, 'address': h, 'port': p | int, 'probe': 'tcp', 'expect': 'deny'}) -%}
+          {%-       endfor -%}
+          {%-     endfor -%}
+          {%-   endfor -%}
+          {%- endif -%}
+          {{ out }}
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg: >-
+          Mode {{ flow_mode }}{{ ' (enforced)' if flow_enforced | bool else '' }}, {{ flow_rounds }} round(s):
+          {{ flow_plan | map(attribute='flow') | zip(flow_plan | map(attribute='target'), flow_plan | map(attribute='port'))
+             | map('join', ' ') | list }}
+
+    - name: Warn about N6 before enforcement
+      ansible.builtin.debug:
+        msg: >-
+          Negative probes (N6) are included and flow_enforced is false. Do not run them while ZMS is
+          learning flows for policy recommendations.
+      when:
+        - flow_mode != 'positive'
+        - not (flow_enforced | bool)
+
+    - name: Run the probes from the Linux bastion
+      ansible.builtin.include_tasks: tasks/flow-run.yml
+
+- name: Report
+  ansible.builtin.import_playbook: flow-report.yml

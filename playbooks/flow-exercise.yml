@@ -1,0 +1,240 @@
+---
+# flow-exercise.yml - generate and check the Table 5 allowed flows F1-F3 and F7-F10.
+# Manual use only. Every probe runs on the flow's SOURCE host, so ZMS records the right source.
+#
+#   F1  client -> web 8090         HTTP GET /api/tickets (web proxies it, so it also drives real F2 + F3)
+#   F2  web -> middleware 8091     HTTP GET /health
+#   F3  middleware -> db 3306      MySQL greeting (no login)
+#   F7  control node -> Linux 22   Ansible's own SSH connection to web, middleware, db, client
+#   F8  control node -> DCs 5986   Ansible's own WinRM connection to the DCs
+#   F9  dc <-> rodc                dcdiag and repadmin run on each DC against the other
+#   F10 web/middleware/db/control node/DCs -> Internet 443   HTTPS GET flow_f10_url
+#
+# Usage (on the control node):
+#   sudo /opt/control-repo/scripts/estate-shell.sh ansible-playbook playbooks/flow-exercise.yml
+#   ... -e flow_rounds=6 -e flow_interval=30     (a burst for the learning window)
+# Or run everything at once: sudo /opt/control-repo/scripts/flow-test.sh learn | verify
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: flow-preflight.yml
+
+- name: Flow tests | F1, F2, F3, F7, F10 from the Linux hosts
+  hosts: "{{ target | default(flow_linux_pattern) }}"
+  gather_facts: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    flow_playbook_name: flow-exercise
+    flow_self_label: >-
+      {{ group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default('host') }}
+    # Service Desk peers stay inside the host's ring (AppEnv), as in vars/servicedesk.yml.
+    flow_ring_group: >-
+      {{ group_names | select('match', '^appenv_') | reject('equalto', 'appenv_shared') | first | default('') }}
+    flow_ring_peers: "{{ groups[flow_ring_group] if flow_ring_group else groups['all'] }}"
+    flow_web: "{{ groups['role_web'] | default([]) | intersect(flow_ring_peers) | first | default('') }}"
+    flow_mw: "{{ groups['role_middleware'] | default([]) | intersect(flow_ring_peers) | first | default('') }}"
+    flow_db: "{{ groups['role_db'] | default([]) | intersect(flow_ring_peers) | first | default('') }}"
+    flow_f7_groups: [role_web, role_middleware, role_db, role_client]
+    flow_f10_groups: [role_web, role_middleware, role_db, role_ansible_control]
+  tasks:
+    - name: End here if pre-flight found the converge lock held
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['flow_lock_held'] | default(false) | bool
+
+    - name: F7 | open Ansible's SSH session (this connection is the flow)
+      ansible.builtin.ping:
+      register: flow_ping
+      ignore_unreachable: true
+      failed_when: false   # SSH up but Python missing is still an F7 session; never end the host here
+
+    - name: F7 | record the SSH session
+      ansible.builtin.include_tasks: tasks/flow-record.yml
+      vars:
+        flow_new_results:
+          - Time: "{{ lookup('ansible.builtin.pipe', 'date +%Y-%m-%dT%H:%M:%S%:z') }}"
+            Round: 1
+            Flow: F7
+            Target: "{{ flow_self_label }}"
+            Address: "{{ inventory_hostname }}"
+            Port: "{{ ansible_port | default(22) }}"
+            Expect: allow
+            Result: "{{ 'UNREACHABLE' if flow_ping.unreachable | default(false) else 'OPEN' }}"
+            Verdict: "{{ 'FAIL' if flow_ping.unreachable | default(false) else 'PASS' }}"
+            Ms: 0
+            Detail: "{{ flow_ping.msg | default('Ansible SSH session from the control node') | string | truncate(160) }}"
+      when: group_names | intersect(flow_f7_groups) | length > 0
+
+    - name: Stop here if the host is unreachable
+      ansible.builtin.meta: end_host
+      when: flow_ping.unreachable | default(false)
+
+    - name: Build this host's probe plan
+      ansible.builtin.set_fact:
+        flow_plan: >-
+          {{ ([{'flow': 'F1', 'target': 'web', 'address': flow_web, 'port': 8090, 'probe': 'http',
+                'path': '/api/tickets', 'expect': 'allow'}]
+               if ('role_client' in group_names and flow_web) else [])
+           + ([{'flow': 'F2', 'target': 'middleware', 'address': flow_mw, 'port': 8091, 'probe': 'http',
+                'path': '/health', 'expect': 'allow'}]
+               if ('role_web' in group_names and flow_mw) else [])
+           + ([{'flow': 'F3', 'target': 'db', 'address': flow_db, 'port': 3306, 'probe': 'mysql',
+                'expect': 'allow'}]
+               if ('role_middleware' in group_names and flow_db) else [])
+           + ([{'flow': 'F10', 'target': flow_f10_url | urlsplit('hostname'), 'url': flow_f10_url,
+                'probe': 'https', 'verify': flow_validate_certs | bool, 'expect': 'allow'}]
+               if (group_names | intersect(flow_f10_groups) | length > 0) else []) }}
+
+    - name: Run the probes
+      ansible.builtin.include_tasks: tasks/flow-run.yml
+
+- name: Flow tests | F8, F9, F10 from the domain controllers
+  hosts: "{{ target | default(flow_dc_pattern) }}"
+  gather_facts: false
+  vars_files:
+    - ../vars/flows.yml
+  vars:
+    flow_playbook_name: flow-exercise
+    flow_self_label: >-
+      {{ group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default('host') }}
+    flow_dc_hosts: "{{ query('ansible.builtin.inventory_hostnames', flow_dc_pattern) }}"
+    flow_peers: "{{ flow_dc_hosts | reject('equalto', inventory_hostname) | list }}"
+    # IP -> name dcdiag/repadmin use: the DC's computer name in the forest, so Kerberos and LDAP
+    # work as in production; the IP if the inventory has no computer_name for it.
+    flow_dc_names: >-
+      {%- set m = {} -%}
+      {%- for h in flow_dc_hosts -%}
+      {%-   set cn = hostvars[h].computer_name | default('', true) -%}
+      {%-   set _ = m.update({h: (cn ~ '.' ~ ad_domain_name) if cn else h}) -%}
+      {%- endfor -%}
+      {{ m }}
+    flow_domain_nc: "{{ ad_domain_name.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"
+    flow_winrm_user: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name, vault_url=azure_keyvault_url,
+          client_id=azure_client_id) | from_json).winrm_username | default('', true) }}
+    flow_ad_user: >-
+      {{ flow_winrm_user if (ad_backslash in flow_winrm_user or '@' in flow_winrm_user)
+         else ad_domain_netbios ~ ad_backslash ~ flow_winrm_user }}
+  tasks:
+    - name: End here if pre-flight found the converge lock held
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['flow_lock_held'] | default(false) | bool
+
+    - name: F8 | open Ansible's WinRM session (this connection is the flow)
+      ansible.windows.win_ping:
+      register: flow_ping
+      ignore_unreachable: true
+      failed_when: false   # WinRM up but the module failed is still an F8 session
+
+    - name: F8 | record the WinRM session
+      ansible.builtin.include_tasks: tasks/flow-record.yml
+      vars:
+        flow_new_results:
+          - Time: "{{ lookup('ansible.builtin.pipe', 'date +%Y-%m-%dT%H:%M:%S%:z') }}"
+            Round: 1
+            Flow: F8
+            Target: "{{ flow_self_label }}"
+            Address: "{{ inventory_hostname }}"
+            Port: 5986
+            Expect: allow
+            Result: "{{ 'UNREACHABLE' if flow_ping.unreachable | default(false) else 'OPEN' }}"
+            Verdict: "{{ 'FAIL' if flow_ping.unreachable | default(false) else 'PASS' }}"
+            Ms: 0
+            Detail: "{{ flow_ping.msg | default('Ansible WinRM session from the control node') | string | truncate(160) }}"
+
+    - name: Stop here if the host is unreachable
+      ansible.builtin.meta: end_host
+      when: flow_ping.unreachable | default(false)
+
+    - name: F9 | dcdiag against each peer DC
+      ansible.windows.win_command:
+        argv:
+          - dcdiag.exe
+          - "/s:{{ flow_dc_names[item] }}"
+      loop: "{{ flow_peers }}"
+      register: flow_dcdiag
+      changed_when: false
+      failed_when: false
+      # dcdiag/repadmin authenticate to the peer DC. Over WinRM/NTLM the credentials do not make
+      # that second hop, so these commands run under runas with network-only credentials.
+      # Task vars, because os_windows.yml sets ansible_become: false as an inventory variable.
+      vars: &flow_ad_become
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: "{{ flow_ad_user }}"
+        ansible_become_password: "{{ ansible_password }}"
+        ansible_become_flags: logon_type=new_credentials logon_flags=netcredentials_only
+
+    - name: F9 | repadmin /showrepl against each peer DC
+      ansible.windows.win_command:
+        argv:
+          - repadmin.exe
+          - /showrepl
+          - "{{ flow_dc_names[item] }}"
+      loop: "{{ flow_peers }}"
+      register: flow_showrepl
+      changed_when: false
+      failed_when: false
+      vars: *flow_ad_become
+
+    - name: F9 | from the forest root, ask each peer DC to replicate the domain partition now
+      ansible.windows.win_command:
+        argv:
+          - repadmin.exe
+          - /replicate
+          - "{{ flow_dc_names[item] }}"
+          - "{{ flow_dc_names[inventory_hostname] }}"
+          - "{{ flow_domain_nc }}"
+      loop: "{{ flow_peers }}"
+      register: flow_replicate
+      changed_when: false
+      failed_when: false
+      when: "'role_dc' in group_names"
+      vars: *flow_ad_become
+
+    - name: F9 | record the AD operations
+      ansible.builtin.include_tasks: tasks/flow-record.yml
+      vars:
+        _ops: >-
+          {{ (flow_dcdiag.results | default([]) | map('combine', {'_op': 'dcdiag'}) | list)
+           + (flow_showrepl.results | default([]) | map('combine', {'_op': 'repadmin /showrepl'}) | list)
+           + (flow_replicate.results | default([]) | rejectattr('skipped', 'defined') | map('combine', {'_op': 'repadmin /replicate'}) | list) }}
+        flow_new_results: >-
+          {%- set out = [] -%}
+          {%- for r in _ops -%}
+          {%-   set text = (r.stdout | default('')) ~ (r.stderr | default('')) ~ (r.msg | default('')) -%}
+          {%-   if r._op == 'dcdiag' -%}
+          {%-     set ok = 'passed test Connectivity' in text -%}
+          {%-     set detail = 'dcdiag: ' ~ (text | regex_findall('passed test') | length) ~ ' tests passed, '
+                     ~ (text | regex_findall('failed test') | length) ~ ' failed' -%}
+          {%-   else -%}
+          {%-     set ok = (r.rc | default(1)) == 0 -%}
+          {%-     set detail = r._op ~ ': rc=' ~ (r.rc | default('n/a')) ~ ' '
+                     ~ (text | regex_search('(?m)^.*(completed successfully|error|denied|fail).*$', ignorecase=True) | default('', true) | trim) -%}
+          {%-   endif -%}
+          {%-   if r.msg is defined and not (r.stdout | default('')) and not (r.stderr | default('')) -%}
+          {%-     set ok = false -%}
+          {%-     set detail = r._op ~ ' did not run: ' ~ r.msg -%}
+          {%-   endif -%}
+          {%-   set _ = out.append({'Time': lookup('ansible.builtin.pipe', 'date +%Y-%m-%dT%H:%M:%S%:z'), 'Round': 1, 'Flow': 'F9',
+                  'Target': hostvars[r.item].group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default(r.item),
+                  'Address': r.item, 'Port': 'AD', 'Expect': 'allow',
+                  'Result': 'OK' if ok else 'FAILED', 'Verdict': 'PASS' if ok else 'FAIL',
+                  'Ms': 0, 'Detail': (detail ~ ' (' ~ (r.delta | default('')) ~ ')') | truncate(200)}) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: F10 | build the HTTPS probe
+      ansible.builtin.set_fact:
+        flow_plan:
+          - flow: F10
+            target: "{{ flow_f10_url | urlsplit('hostname') }}"
+            url: "{{ flow_f10_url }}"
+            probe: https
+            verify: "{{ flow_validate_certs | bool }}"
+            expect: allow
+
+    - name: Run the probes
+      ansible.builtin.include_tasks: tasks/flow-run.yml
+
+- name: Report
+  ansible.builtin.import_playbook: flow-report.yml
