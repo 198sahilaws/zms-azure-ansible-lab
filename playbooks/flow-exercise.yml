@@ -264,6 +264,23 @@
           {%-     set detail = 'dcdiag: ' ~ (text | regex_findall('passed test') | length) ~ ' tests passed, '
                      ~ (text | regex_findall('failed test') | length) ~ ' failed'
                      ~ ('' if ok else ': ' ~ text[:400]) -%}
+          {%-   elif r._op == 'repadmin /showrepl' -%}
+          {#-     Judged by the output, not the exit code: repadmin /showrepl can return a non-zero
+                  code (seen: 234) after a complete, healthy report. The flow worked if it read the
+                  peer's DSA; replication is healthy unless a link reports "failed, result N". -#}
+          {%-     set fails = text | regex_findall('Last attempt @ [^,]*failed, result \\d+ \\([^)]*\\)[^.]*') -%}
+          {%-     set ok = ('DSA invocationID' in text) and (fails | length == 0) -%}
+          {%-     set good = text | regex_findall('was successful') | length -%}
+          {%-     if ok -%}
+          {%-       set detail = r._op ~ ': read the peer DSA, '
+                       ~ ((good ~ ' inbound link(s), all last replicated successfully') if good > 0
+                          else 'it has no inbound replication partners (normal for a writable DC with only an RODC)')
+                       ~ (' (rc=' ~ r.rc ~ ')' if (r.rc | default(0)) != 0 else '') -%}
+          {%-     elif fails | length > 0 -%}
+          {%-       set detail = r._op ~ ': ' ~ (fails | length) ~ ' failing link(s): ' ~ (fails | join('; '))[:400] -%}
+          {%-     else -%}
+          {%-       set detail = r._op ~ ': rc=' ~ (r.rc | default('n/a')) ~ ' ' ~ text[:400] -%}
+          {%-     endif -%}
           {%-   else -%}
           {%-     set ok = (r.rc | default(1)) == 0 -%}
           {%-     set detail = r._op ~ ': rc=' ~ (r.rc | default('n/a')) ~ ' '
