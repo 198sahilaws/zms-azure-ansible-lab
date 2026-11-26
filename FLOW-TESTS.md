@@ -92,8 +92,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
   windows or both). Terraform tags both `Role=bastion`; only the Windows one has `OS=bastion`.
   - **Linux bastion** (`role_bastion` minus `os_bastion`): reached over SSH as `ubuntu` with the
     estate key, nothing to set up. Override detection with `-e flow_linux_bastion=<IP>`.
-  - **Windows bastion** (`os_bastion`): Terraform deliberately gives it no WinRM listener; run the
-    workloads' `winrm-bootstrap.ps1` on it once via Run Command. Its admin is the account in the
+  - **Windows bastion** (`os_bastion`): Terraform enables WinRM on it (`modules/bastion-windows`,
+    `bootstrap_winrm`, default true); an older estate gets it on its next `terraform apply`. Its admin is the account in the
     Key Vault secret.
   - Limit to one with `-e flow_bastion_kinds=linux` (or `windows`).
 - **Ansible RG -> Bastion RG** (TCP 22 for the Linux bastion, 5986 for the Windows one) is used by

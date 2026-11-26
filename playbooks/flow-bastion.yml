@@ -16,9 +16,10 @@
 # Prerequisites and policy notes:
 #   Linux bastion    Reached over SSH as ubuntu with the estate key (Terraform modules/bastion),
 #                    so nothing to set up. Uses Ansible RG -> Bastion RG TCP 22 (not in Table 5).
-#   Windows bastion  Terraform deliberately gives it no WinRM listener (modules/bastion-windows):
-#                    run the workloads' winrm-bootstrap.ps1 on it (Run Command) once. Its admin is
-#                    the account in the Key Vault secret. Uses Ansible RG -> Bastion RG TCP 5986.
+#   Windows bastion  Terraform enables WinRM on it (modules/bastion-windows, bootstrap_winrm,
+#                    default true); an estate built before that change gets it on its next
+#                    terraform apply. Its admin is the account in the Key Vault secret.
+#                    Uses Ansible RG -> Bastion RG TCP 5986.
 #   Both management flows appear in the learning data. Allow them in the ZMS policy, or this
 #   playbook stops working once ZMS enforces.
 #

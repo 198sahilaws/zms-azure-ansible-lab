@@ -96,7 +96,7 @@ connect, the policy blocked it; the port was not simply closed.
 | `connection-details.txt` | Same folder. Lists the bastion's public IP and every host's private IP |
 | Your public IP in `bastion_allowed_cidrs` | `deployments/web-app-adds/terraform.tfvars`. Only these addresses can reach the bastion |
 | An SSH client | OpenSSH on Linux, macOS or Windows 10/11 |
-| Azure CLI, signed in (optional) | For section 3.4 (Windows bastion) and the Run Command option in section 4.3 |
+| Azure CLI, signed in (optional) | For the manual WinRM step in section 3.4 and the Azure CLI workflow in section 7A |
 
 ### 3.2 The code must be on the control node
 
@@ -139,11 +139,26 @@ also `OS=bastion`. So the Windows bastion is the inventory group `os_bastion`, a
 is in `role_bastion` but not in `os_bastion`. It is reached over SSH as `ubuntu` with the same estate
 key the control node already holds.
 
-### 3.4 Windows bastion only: enable WinRM once
+### 3.4 Windows bastion only: WinRM
 
-Terraform deliberately leaves the Windows bastion unmanaged, with no WinRM listener. The control node
-needs WinRM (TCP 5986) to run the probe script there. Run the same bootstrap script the Windows
-workloads use, once, from your PC (Azure CLI signed in, run from the Terraform repo root):
+The control node needs WinRM (TCP 5986) on the Windows bastion to run the probe script there.
+Terraform sets it up: `modules/bastion-windows` runs the same `winrm-bootstrap.ps1` the Windows
+workloads use, through a Terraform-managed Run Command (`bootstrap_winrm`, default `true`). It is
+used only by the flow tests; the converge never targets the bastion.
+
+**An estate deployed before this change** gets it on its next apply, from the deployment folder:
+
+```bash
+terraform plan -out tfplan     # expect 1 to add, 0 to change, 0 to destroy:
+                               #   module.estate.module.bastion_windows[0].azurerm_virtual_machine_run_command.winrm_bootstrap[0]
+terraform apply tfplan
+```
+
+Nothing is rebuilt, and re-running the script on a bastion that already has a listener is harmless (it
+reuses the certificate). If the plan shows anything else, stop and check it.
+
+**Without Terraform**, the same script can be run by hand (Azure CLI signed in, from the Terraform
+repo root):
 
 ```bash
 # Find the Windows bastion's VM name (it contains "bastion-win")
@@ -155,21 +170,25 @@ az vm run-command invoke -g <resource-group> -n <windows-bastion-vm-name> \
   --parameters "AdminUser=<windows_admin_username>"
 ```
 
+The leading `@` matters: it makes the Azure CLI send the file's contents. Without it, the path itself
+is sent and the bastion fails with "is not recognized as the name of a cmdlet".
+
 - `<resource-group>` is on the first lines of `connection-details.txt`.
 - `<windows_admin_username>` is the `windows_admin_username` setting (default `zmsadmin`).
-- The script's log is `C:\Windows\Temp\winrm-bootstrap.log` on the bastion.
+- The output ends with `PASS: HTTPS listener on 5986`. The script's log is
+  `C:\Windows\Temp\winrm-bootstrap.log` on the bastion.
 
-Check from the control node (section 4) that the bastion now answers:
+Check from the control node (section 4) that the bastion now answers on 5986:
 
 ```bash
-sudo /opt/control-repo/scripts/estate-shell.sh ansible-inventory --graph os_bastion
+nc -zv -w 5 <windows-bastion-private-ip> 5986      # "succeeded"
 ```
 
 The playbook signs in with the account in the estate's Key Vault secret (`winrm_username` /
 `winrm_password`), which is the Windows admin account and password from `secrets.auto.tfvars`.
 
-This listener is not managed by Terraform, so a later `terraform apply` does not remove it. Rebuilding
-the bastion VM does, and then this step must be repeated.
+To keep the Windows bastion fully unmanaged instead, set `bootstrap_winrm = false` on the
+`bastion-windows` module and run F5/F6 from the Linux bastion (`-e flow_bastion_kinds=linux`).
 
 ### 3.5 ZMS and the policy
 
@@ -659,7 +678,7 @@ There is no separate script for the Linux bastion. Use `flow-bastion.yml` (secti
 | `flow-test.sh: command not found` or `Permission denied` | The repo refresh has not run since the files were pushed | `sudo systemctl start ansible-bootstrap.service`, or run it as `sudo bash /opt/control-repo/scripts/flow-test.sh learn` |
 | `Invalid setting: ...` | A misspelled `-e` value | Use the values in section 9.2 |
 | `No bastion found, so F5/F6 cannot run` | `bastion_type = "none"`, or the bastion is not in the inventory | Check `ansible-inventory --graph role_bastion`, or skip with `FLOW_SKIP=flow-bastion` |
-| Windows bastion `UNREACHABLE` in `flow-bastion.yml` | WinRM not enabled on it (section 3.4), or after enforcement the 5986 management flow is not allowed | Run the WinRM bootstrap; allow Ansible RG to Bastion RG TCP 5986. Use `-e flow_bastion_kinds=linux` meanwhile |
+| Windows bastion `UNREACHABLE` in `flow-bastion.yml` | WinRM not enabled on it (an estate built before the Terraform change, section 3.4), or after enforcement the 5986 management flow is not allowed | `terraform apply` (or run the bootstrap by hand, section 3.4); allow Ansible RG to Bastion RG TCP 5986. Use `-e flow_bastion_kinds=linux` meanwhile |
 | Linux bastion `UNREACHABLE` | After enforcement, Ansible RG to Bastion RG TCP 22 is not allowed | Allow it |
 | F7 or F8 `UNREACHABLE` | Host stopped, or (after enforcement) the policy blocks F7/F8 | `az vm list -d -g <rg> -o table` for power state; then the policy |
 | F9 `FAILED`, `did not run: Failed to become user ...` | The second sign-in that dcdiag and repadmin use to reach the other DC was refused | Check that `windows_admin_password` is still the domain admin's password and that `<NETBIOS>\zmsadmin` can sign in |
