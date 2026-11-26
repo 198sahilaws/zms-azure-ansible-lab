@@ -130,8 +130,8 @@ chooses which are built; the `web-app-adds` default is `"linux"`.
 | `bastion_type` | F5 and F6 from | Extra setup |
 |---|---|---|
 | `"linux"` (default) | Linux bastion | None |
-| `"windows"` | Windows bastion | Section 3.4 |
-| `"both"` | Both bastions | Section 3.4 |
+| `"windows"` | Windows bastion | None with current Terraform; an older estate needs section 3.4 |
+| `"both"` | Both bastions | As for `"windows"` |
 | `"none"` | Not possible | Skip the bastion tests (section 9) |
 
 How the playbook finds them: Terraform tags both bastions `Role=bastion`, and only the Windows one
@@ -146,7 +146,9 @@ Terraform sets it up: `modules/bastion-windows` runs the same `winrm-bootstrap.p
 workloads use, through a Terraform-managed Run Command (`bootstrap_winrm`, default `true`). It is
 used only by the flow tests; the converge never targets the bastion.
 
-**An estate deployed before this change** gets it on its next apply, from the deployment folder:
+**An estate deployed before this change** gets it on its next apply. Run it in the deployment folder
+you deployed from (the one holding `terraform.tfstate` and `secrets.auto.tfvars`), after bringing the
+updated `modules/bastion-windows` files into that copy of the Terraform code:
 
 ```bash
 terraform plan -out tfplan     # expect 1 to add, 0 to change, 0 to destroy:
@@ -158,7 +160,7 @@ Nothing is rebuilt, and re-running the script on a bastion that already has a li
 reuses the certificate). If the plan shows anything else, stop and check it.
 
 **Without Terraform**, the same script can be run by hand (Azure CLI signed in, from the Terraform
-repo root):
+repo root). Bash:
 
 ```bash
 # Find the Windows bastion's VM name (it contains "bastion-win")
@@ -167,6 +169,18 @@ az vm list -g <resource-group> --query "[].name" -o tsv
 az vm run-command invoke -g <resource-group> -n <windows-bastion-vm-name> \
   --command-id RunPowerShellScript \
   --scripts @modules/compute-windows/winrm-bootstrap.ps1 \
+  --parameters "AdminUser=<windows_admin_username>"
+```
+
+PowerShell (backticks continue the line; quote the `@` path so PowerShell cannot read it as
+splatting):
+
+```powershell
+az vm list -g <resource-group> --query "[].name" -o tsv
+
+az vm run-command invoke -g <resource-group> -n <windows-bastion-vm-name> `
+  --command-id RunPowerShellScript `
+  --scripts "@modules\compute-windows\winrm-bootstrap.ps1" `
   --parameters "AdminUser=<windows_admin_username>"
 ```
 
@@ -390,12 +404,12 @@ sections 5 to 7, from your PC.
 ### 7A.1 What you need
 
 - The Azure CLI, signed in: `az login` (and `az account set --subscription <id>` if you have several
-  subscriptions).
+  subscriptions). To sign in as a service principal instead, see 7A.4.
 - Permission to run commands on VMs in the lab's resource group, for example the
   **Virtual Machine Contributor** role.
 - The resource group name, from the first lines of `connection-details.txt`.
-- A bash shell: Linux, macOS, WSL, or Azure Cloud Shell. The commands below use bash quoting;
-  Windows PowerShell quotes differently.
+- A shell. 7A.2 uses bash (Linux, macOS, WSL or Azure Cloud Shell); 7A.5 gives the same steps for
+  Windows PowerShell.
 
 ### 7A.2 Steps
 
@@ -471,6 +485,64 @@ To see every probe of the last run instead, remove `| grep " verdict=FAIL "`.
 
 - **Refreshing the code** on the control node (section 3.2) also works this way:
   `--scripts 'systemctl start ansible-bootstrap.service; git -C /opt/control-repo log -1 --oneline'`.
+
+### 7A.4 Signing in as a service principal
+
+The Azure CLI runs every command as whichever identity is signed in. To use a service principal:
+
+```bash
+az login --service-principal --username "<appId>" --password "<client secret>" --tenant "<tenant ID>"
+az account set --subscription "<subscription ID or name>"
+az account show --query "{identity:user.name, type:user.type, subscription:name}" -o table   # type: servicePrincipal
+```
+
+- With a certificate instead of a secret: `--certificate <path to PEM with private key>` in place of
+  `--password` (older CLI versions take the PEM path with `--password`).
+- If Terraform uses the same service principal through `ARM_*` variables, pass them in, for example in
+  PowerShell: `az login --service-principal --username $env:ARM_CLIENT_ID --password $env:ARM_CLIENT_SECRET --tenant $env:ARM_TENANT_ID`.
+- It needs **Virtual Machine Contributor** (or Contributor) on the lab's resource group for
+  `az vm run-command`.
+- `az login` replaces the CLI's current identity. To keep your own sign-in, give the service principal
+  its own profile first: `export AZURE_CONFIG_DIR=~/.azure-sp` (bash) or
+  `$env:AZURE_CONFIG_DIR = "$HOME\.azure-sp"` (PowerShell). Run `az logout` when finished.
+
+### 7A.5 The same steps in Windows PowerShell
+
+`az` on Windows is a batch file, so text with embedded double quotes, `$` or `|` can be altered on its
+way to the VM. Steps 1-4 contain none of these and work as below. Step 5 does, so it sends the command
+from a file instead.
+
+```powershell
+# 1. Resource group and control node
+$RG = "<resource-group>"
+$VM = az vm list -g $RG --query "[?tags.Role=='ansible-control'].name" -o tsv
+$VM
+
+# 2. Estate ready?
+az vm run-command invoke -g $RG -n $VM --command-id RunShellScript `
+  --scripts "tail -n 1 /var/log/ansible/converge-status.log; systemctl is-active ansible-estate.service ansible-bootstrap.service" `
+  --query "value[0].message" -o tsv
+
+# 3. Positive flows (learning window)
+az vm run-command invoke -g $RG -n $VM --command-id RunShellScript `
+  --scripts "/opt/control-repo/scripts/flow-test.sh learn" `
+  --query "value[0].message" -o tsv
+
+# 4. Negative flows (after enforcement)
+az vm run-command invoke -g $RG -n $VM --command-id RunShellScript `
+  --scripts "/opt/control-repo/scripts/flow-test.sh verify" `
+  --query "value[0].message" -o tsv
+
+# 5. Failures from the last run: write the command to a file (LF line ending), then send the file
+$cmd = 'L=/var/log/ansible/flow-exercise.log; R=$(tail -n 1 $L | sed -n "s/.* run=\([^ ]*\) .*/\1/p"); echo "run $R"; grep " run=$R " $L | grep " verdict=FAIL " || echo "no failures"'
+[IO.File]::WriteAllText("$PWD\last-failures.sh", $cmd + "`n")
+az vm run-command invoke -g $RG -n $VM --command-id RunShellScript `
+  --scripts "@last-failures.sh" `
+  --query "value[0].message" -o tsv
+```
+
+Options go after `learn` or `verify` inside the quotes, for example
+`--scripts "/opt/control-repo/scripts/flow-test.sh learn -e flow_bastion_kinds=linux"`.
 
 ---
 
@@ -681,6 +753,8 @@ There is no separate script for the Linux bastion. Use `flow-bastion.yml` (secti
 | Windows bastion `UNREACHABLE` in `flow-bastion.yml` | WinRM not enabled on it (an estate built before the Terraform change, section 3.4), or after enforcement the 5986 management flow is not allowed | `terraform apply` (or run the bootstrap by hand, section 3.4); allow Ansible RG to Bastion RG TCP 5986. Use `-e flow_bastion_kinds=linux` meanwhile |
 | Linux bastion `UNREACHABLE` | After enforcement, Ansible RG to Bastion RG TCP 22 is not allowed | Allow it |
 | F7 or F8 `UNREACHABLE` | Host stopped, or (after enforcement) the policy blocks F7/F8 | `az vm list -d -g <rg> -o table` for power state; then the policy |
+| F9 `FAILED`, `this host is not a domain controller (DomainRole=2, workgroup WORKGROUP)`, and on the other DC `peer is not a domain controller` | The rodc (or adc) never joined the domain or was never promoted; the hourly converge keeps failing on it | Run `sudo scripts/estate-shell.sh ansible-playbook playbooks/windows-rodc.yml` and read its error. The next rows cover the common causes |
+| `windows-rodc.yml`: `failed to join domain ... The user name or password is incorrect` | Usually `domain_join_username` names an account that does not exist in the forest | Check the dc's Security log (below). If it shows `sub=0xc0000064` for that account, rerun `windows-adds.yml` (it creates the named join account, as a Domain and Enterprise Admin) and then `windows-rodc.yml`; or clear `domain_join_username` and `domain_join_password` and `terraform apply` |
 | F9 `FAILED`, `did not run: Failed to become user ...` | The second sign-in that dcdiag and repadmin use to reach the other DC was refused | Check that `windows_admin_password` is still the domain admin's password and that `<NETBIOS>\zmsadmin` can sign in |
 | F9 `FAILED` with `Access is denied` or `LDAP error 49` | Wrong or expired domain credentials | As above |
 | F9 `FAILED` with RPC or `server is unavailable` errors | The other DC is down, or (after enforcement) AD replication ports are not allowed between dc and rodc | Check both DCs are running; review the F9 rule |
@@ -692,6 +766,29 @@ There is no separate script for the Linux bastion. Use `flow-bastion.yml` (secti
 
 For a run that stops early, rerun the failing playbook on its own with `-v` (section 9.1) to see
 the full Ansible output.
+
+### 11.1 Diagnosing a domain join or promotion failure
+
+All read-only, on the control node from `/opt/control-repo`:
+
+```bash
+# Is each DC host really a domain controller? (DomainRole 4 or 5 = DC; 2 or 3 = member or workgroup server)
+sudo scripts/estate-shell.sh ansible 'role_dc:role_rodc' -m ansible.windows.win_shell -a '(Get-CimInstance Win32_ComputerSystem) | Format-List Domain,DomainRole,PartOfDomain'
+
+# The forest's NetBIOS name and the admin account's state
+sudo scripts/estate-shell.sh ansible role_dc -m ansible.windows.win_shell -a '(Get-ADDomain).NetBIOSName; Get-ADUser zmsadmin -Properties LockedOut,PasswordExpired | Format-List SamAccountName,Enabled,LockedOut,PasswordExpired'
+
+# Which join account the secret names (prints the name only)
+sudo scripts/estate-shell.sh ansible role_rodc -m ansible.builtin.debug -a "msg={{ (lookup('zms_keyvault_secret', ansible_secret_name, vault_url=azure_keyvault_url, client_id=azure_client_id) | from_json).domain_join_username | default('(empty: the Windows admin account is used)', true) }}"
+
+# Rejected sign-ins on the dc in the last 3 hours, with reason codes
+sudo scripts/estate-shell.sh ansible role_dc -m ansible.windows.win_shell -a '$since=(Get-Date).AddHours(-3); Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4625,4771,4776; StartTime=$since} -MaxEvents 20 -ErrorAction SilentlyContinue | ForEach-Object { $d=@{}; ([xml]$_.ToXml()).Event.EventData.Data | ForEach-Object { $d[$_.Name]=$_."#text" }; "{0} id={1} user={2}\{3} ip={4} ws={5} status={6} sub={7} pkg={8}" -f $_.TimeCreated,$_.Id,$d.TargetUserName,$d.TargetDomainName,$d.IpAddress,$d.Workstation,$d.Status,$d.SubStatus,$d.AuthenticationPackageName }'
+```
+
+In the Security log lines from the joining host's IP: `0xc0000064` = the account does not exist,
+`0xc000006a` (or Kerberos `0x18`) = wrong password, Kerberos `0x25` = the clocks differ by more than
+5 minutes. To see a join or promotion error that the playbook hides, rerun it with
+`-e rodc_no_log=false` (`-e adc_no_log=false` for `windows-adc.yml`); passwords stay masked.
 
 ---
 
