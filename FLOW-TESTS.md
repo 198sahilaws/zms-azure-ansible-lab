@@ -1,5 +1,7 @@
 # ZMS flow tests (web-app-adds)
 
+Quick reference. The full step-by-step procedure is in `FLOW-TESTS-GUIDE.md`.
+
 Generates traffic for every flow in Table 5 so it appears in ZMS flow data, and later checks the
 enforced policy: allowed flows must connect, denied flows must not. **Manual use only**: nothing
 here is called by `converge.sh`, `orchestrate.yml` or any timer.
@@ -102,7 +104,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
   into the data the recommendations are built from.
 - **Ubuntu packages use TCP 80** (`azure.archive.ubuntu.com`). Denying outbound 80 (N2) also
   breaks `apt` on Ubuntu tiers unless that mirror is allowed.
-- The run stops if a converge or reconverge holds `.git/zms-ansible.lock`.
+- If a converge or the repo refresh holds `.git/zms-ansible.lock`, `flow-test.sh` says which and waits
+  for it (up to 30 minutes; `FLOW_LOCK_WAIT=0` to stop at once). A playbook run on its own stops instead.
 
 ## Files
 

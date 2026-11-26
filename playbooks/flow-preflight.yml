@@ -13,9 +13,11 @@
     flow_lock_file: >-
       {{ lookup('ansible.builtin.env', 'CONTROL_REPO_DIR') | default('/opt/control-repo', true) }}/.git/zms-ansible.lock
   tasks:
+    # flock exits 75 only when another process holds the lock; any other non-zero exit is an
+    # error (for example a lock file this user cannot open), reported separately below.
     - name: Check whether a converge or reconverge holds the run lock
       ansible.builtin.command:
-        argv: [flock, --nonblock, "{{ flow_lock_file }}", "true"]
+        argv: [flock, --nonblock, --conflict-exit-code, "75", "{{ flow_lock_file }}", "true"]
       register: flow_lock_probe
       changed_when: false
       failed_when: false
@@ -24,13 +26,24 @@
     - name: Fix the run ID and record the lock state
       ansible.builtin.set_fact:
         flow_run_id_fixed: "{{ flow_run_id | default(now(fmt='%Y%m%dT%H%M%S')) }}"
-        flow_lock_held: "{{ flow_lock_probe is not skipped and flow_lock_probe.rc != 0 }}"
+        flow_lock_held: "{{ flow_lock_probe is not skipped and flow_lock_probe.rc == 75 }}"
+
+    - name: Stop if the run lock cannot be checked
+      ansible.builtin.fail:
+        msg: >-
+          Cannot check the run lock {{ flow_lock_file }} (flock rc={{ flow_lock_probe.rc }}):
+          {{ flow_lock_probe.stderr | default('') }}. Check its owner and mode with ls -l; it should
+          belong to the service user (ubuntu).
+      when:
+        - flow_lock_probe is not skipped
+        - flow_lock_probe.rc not in [0, 75]
 
     - name: Stop while a converge is running
       ansible.builtin.fail:
         msg: >-
           A converge or reconverge holds {{ flow_lock_file }}. Wait for it to finish
-          (tail /var/log/ansible/converge-status.log), or re-run with -e flow_ignore_lock=true.
+          (systemctl is-active ansible-estate.service ansible-bootstrap.service), then run again.
+          scripts/flow-test.sh waits for it automatically.
       when: flow_lock_held | bool
 
     - name: Validate the settings

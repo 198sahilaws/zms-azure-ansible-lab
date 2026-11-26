@@ -171,3 +171,17 @@
 
     - name: Forward non-AD DNS queries to Azure DNS
       ansible.builtin.include_tasks: tasks/azure-dns-forwarder.yml
+
+    # The promotion above installs the AD DS role WITHOUT its management tools, so dcdiag and
+    # repadmin (RSAT-ADDS-Tools) were missing on these DCs. windows-adds.yml already installs
+    # them on the forest root; this keeps every DC the same. Idempotent; normally no reboot.
+    - name: Install the AD DS management tools (dcdiag, repadmin)
+      ansible.windows.win_feature:
+        name: AD-Domain-Services
+        include_management_tools: true
+        state: present
+      register: ad_tools
+
+    - name: Reboot if the tools install requires it
+      ansible.windows.win_reboot:
+      when: ad_tools.reboot_required

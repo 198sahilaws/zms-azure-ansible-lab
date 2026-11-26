@@ -201,25 +201,31 @@
         flow_new_results: >-
           {%- set out = [] -%}
           {%- for r in _ops -%}
-          {%-   set text = (r.stdout | default('')) ~ (r.stderr | default('')) ~ (r.msg | default('')) -%}
-          {%-   if r._op == 'dcdiag' -%}
+          {%-   set text = ((r.stdout | default('')) ~ ' ' ~ (r.stderr | default(''))) | regex_replace('\\s+', ' ') | trim -%}
+          {%-   set ran = (r.stdout | default('')) or (r.stderr | default('')) or (r.rc is defined) -%}
+          {%-   if not ran -%}
+          {%-     set ok = false -%}
+          {%-     if 'cannot find the file' in (r.msg | default('')) -%}
+          {%-       set detail = r._op ~ ': ' ~ r._op.split(' ')[0] ~ '.exe is not installed on this DC (AD DS management tools'
+                       ~ ' missing; windows-rodc.yml / windows-adc.yml install them on the next converge)' -%}
+          {%-     else -%}
+          {%-       set detail = r._op ~ ' did not run: ' ~ (r.msg | default('no output')) -%}
+          {%-     endif -%}
+          {%-   elif r._op == 'dcdiag' -%}
           {%-     set ok = 'passed test Connectivity' in text -%}
           {%-     set detail = 'dcdiag: ' ~ (text | regex_findall('passed test') | length) ~ ' tests passed, '
-                     ~ (text | regex_findall('failed test') | length) ~ ' failed' -%}
+                     ~ (text | regex_findall('failed test') | length) ~ ' failed'
+                     ~ ('' if ok else ': ' ~ text[:400]) -%}
           {%-   else -%}
           {%-     set ok = (r.rc | default(1)) == 0 -%}
           {%-     set detail = r._op ~ ': rc=' ~ (r.rc | default('n/a')) ~ ' '
-                     ~ (text | regex_search('(?m)^.*(completed successfully|error|denied|fail).*$', ignorecase=True) | default('', true) | trim) -%}
-          {%-   endif -%}
-          {%-   if r.msg is defined and not (r.stdout | default('')) and not (r.stderr | default('')) -%}
-          {%-     set ok = false -%}
-          {%-     set detail = r._op ~ ' did not run: ' ~ r.msg -%}
+                     ~ ((text | regex_search('[^.]*completed successfully[^.]*', ignorecase=True) | default('', true)) if ok else text[:400]) -%}
           {%-   endif -%}
           {%-   set _ = out.append({'Time': lookup('ansible.builtin.pipe', 'date +%Y-%m-%dT%H:%M:%S%:z'), 'Round': 1, 'Flow': 'F9',
                   'Target': hostvars[r.item].group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default(r.item),
                   'Address': r.item, 'Port': 'AD', 'Expect': 'allow',
                   'Result': 'OK' if ok else 'FAILED', 'Verdict': 'PASS' if ok else 'FAIL',
-                  'Ms': 0, 'Detail': (detail ~ ' (' ~ (r.delta | default('')) ~ ')') | truncate(200)}) -%}
+                  'Ms': 0, 'Detail': (detail ~ ' (' ~ (r.delta | default('')) ~ ')') | truncate(480)}) -%}
           {%- endfor -%}
           {{ out }}
 
