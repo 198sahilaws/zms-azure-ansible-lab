@@ -98,6 +98,15 @@
       {{ group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default('host') }}
     flow_dc_hosts: "{{ query('ansible.builtin.inventory_hostnames', flow_dc_pattern) }}"
     flow_peers: "{{ flow_dc_hosts | reject('equalto', inventory_hostname) | list }}"
+    # Peers that answered the domain-controller check above as DCs
+    flow_live_peers: >-
+      {%- set out = [] -%}
+      {%- for p in flow_peers -%}
+      {%-   if hostvars[p].flow_is_dc | default(false) | bool -%}
+      {%-     set _ = out.append(p) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
     # IP -> name dcdiag/repadmin use: the DC's computer name in the forest, so Kerberos and LDAP
     # work as in production; the IP if the inventory has no computer_name for it.
     flow_dc_names: >-
@@ -145,12 +154,33 @@
       ansible.builtin.meta: end_host
       when: flow_ping.unreachable | default(false)
 
+    # A host tagged dc/rodc is not necessarily a domain controller: if its join or promotion
+    # failed, it is still a workgroup server. Check first, so F9 reports that plainly instead of
+    # failing dcdiag/repadmin with confusing errors.
+    - name: F9 | check this host really is a domain controller
+      ansible.windows.win_powershell:
+        script: |
+          $cs = Get-CimInstance -ClassName Win32_ComputerSystem
+          [pscustomobject]@{ Domain = [string]$cs.Domain; DomainRole = [int]$cs.DomainRole; PartOfDomain = [bool]$cs.PartOfDomain }
+      register: flow_dc_role
+      changed_when: false
+
+    - name: F9 | record whether it is a domain controller
+      ansible.builtin.set_fact:
+        # Win32_ComputerSystem.DomainRole: 4 = backup DC (incl. RODC), 5 = primary DC
+        flow_is_dc: "{{ (flow_dc_role.output[0].DomainRole | default(0) | int) >= 4 }}"
+        flow_dc_role_text: >-
+          DomainRole={{ flow_dc_role.output[0].DomainRole | default('?') }},
+          {{ 'domain' if flow_dc_role.output[0].PartOfDomain | default(false) else 'workgroup' }}
+          {{ flow_dc_role.output[0].Domain | default('?') }}
+
     - name: F9 | dcdiag against each peer DC
       ansible.windows.win_command:
         argv:
           - dcdiag.exe
           - "/s:{{ flow_dc_names[item] }}"
-      loop: "{{ flow_peers }}"
+      loop: "{{ flow_live_peers }}"
+      when: flow_is_dc | bool
       register: flow_dcdiag
       changed_when: false
       failed_when: false
@@ -170,7 +200,8 @@
           - repadmin.exe
           - /showrepl
           - "{{ flow_dc_names[item] }}"
-      loop: "{{ flow_peers }}"
+      loop: "{{ flow_live_peers }}"
+      when: flow_is_dc | bool
       register: flow_showrepl
       changed_when: false
       failed_when: false
@@ -184,30 +215,47 @@
           - "{{ flow_dc_names[item] }}"
           - "{{ flow_dc_names[inventory_hostname] }}"
           - "{{ flow_domain_nc }}"
-      loop: "{{ flow_peers }}"
+      loop: "{{ flow_live_peers }}"
       register: flow_replicate
       changed_when: false
       failed_when: false
-      when: "'role_dc' in group_names"
+      when:
+        - "'role_dc' in group_names"
+        - flow_is_dc | bool
       vars: *flow_ad_become
 
     - name: F9 | record the AD operations
       ansible.builtin.include_tasks: tasks/flow-record.yml
       vars:
         _ops: >-
-          {{ (flow_dcdiag.results | default([]) | map('combine', {'_op': 'dcdiag'}) | list)
-           + (flow_showrepl.results | default([]) | map('combine', {'_op': 'repadmin /showrepl'}) | list)
+          {{ (flow_dcdiag.results | default([]) | rejectattr('skipped', 'defined') | map('combine', {'_op': 'dcdiag'}) | list)
+           + (flow_showrepl.results | default([]) | rejectattr('skipped', 'defined') | map('combine', {'_op': 'repadmin /showrepl'}) | list)
            + (flow_replicate.results | default([]) | rejectattr('skipped', 'defined') | map('combine', {'_op': 'repadmin /replicate'}) | list) }}
+        _now: "{{ lookup('ansible.builtin.pipe', 'date +%Y-%m-%dT%H:%M:%S%:z') }}"
         flow_new_results: >-
           {%- set out = [] -%}
+          {%- if not (flow_is_dc | bool) -%}
+          {%-   set _ = out.append({'Time': _now, 'Round': 1, 'Flow': 'F9', 'Target': flow_self_label, 'Address': inventory_hostname,
+                  'Port': 'AD', 'Expect': 'allow', 'Result': 'FAILED', 'Verdict': 'FAIL', 'Ms': 0,
+                  'Detail': 'this host is not a domain controller (' ~ (flow_dc_role_text | trim)
+                            ~ '): its domain join or promotion has not succeeded, so no AD replication is possible'}) -%}
+          {%- else -%}
+          {%-   for p in flow_peers | reject('in', flow_live_peers) -%}
+          {%-     set _ = out.append({'Time': _now, 'Round': 1, 'Flow': 'F9',
+                    'Target': hostvars[p].group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default(p),
+                    'Address': p, 'Port': 'AD', 'Expect': 'allow', 'Result': 'FAILED', 'Verdict': 'FAIL', 'Ms': 0,
+                    'Detail': 'peer is not a domain controller (' ~ (hostvars[p].flow_dc_role_text | default('role unknown') | trim)
+                              ~ '), so there is nothing to replicate with'}) -%}
+          {%-   endfor -%}
+          {%- endif -%}
           {%- for r in _ops -%}
           {%-   set text = ((r.stdout | default('')) ~ ' ' ~ (r.stderr | default(''))) | regex_replace('\\s+', ' ') | trim -%}
           {%-   set ran = (r.stdout | default('')) or (r.stderr | default('')) or (r.rc is defined) -%}
           {%-   if not ran -%}
           {%-     set ok = false -%}
           {%-     if 'cannot find the file' in (r.msg | default('')) -%}
-          {%-       set detail = r._op ~ ': ' ~ r._op.split(' ')[0] ~ '.exe is not installed on this DC (AD DS management tools'
-                       ~ ' missing; windows-rodc.yml / windows-adc.yml install them on the next converge)' -%}
+          {%-       set detail = r._op ~ ': ' ~ r._op.split(' ')[0] ~ '.exe not found on this DC (AD DS management tools'
+                       ~ ' missing; windows-adds/-adc/-rodc.yml install them)' -%}
           {%-     else -%}
           {%-       set detail = r._op ~ ' did not run: ' ~ (r.msg | default('no output')) -%}
           {%-     endif -%}
@@ -221,7 +269,7 @@
           {%-     set detail = r._op ~ ': rc=' ~ (r.rc | default('n/a')) ~ ' '
                      ~ ((text | regex_search('[^.]*completed successfully[^.]*', ignorecase=True) | default('', true)) if ok else text[:400]) -%}
           {%-   endif -%}
-          {%-   set _ = out.append({'Time': lookup('ansible.builtin.pipe', 'date +%Y-%m-%dT%H:%M:%S%:z'), 'Round': 1, 'Flow': 'F9',
+          {%-   set _ = out.append({'Time': _now, 'Round': 1, 'Flow': 'F9',
                   'Target': hostvars[r.item].group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default(r.item),
                   'Address': r.item, 'Port': 'AD', 'Expect': 'allow',
                   'Result': 'OK' if ok else 'FAILED', 'Verdict': 'PASS' if ok else 'FAIL',

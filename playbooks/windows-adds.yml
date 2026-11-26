@@ -23,6 +23,29 @@
       {{ (lookup('zms_keyvault_secret', ansible_secret_name,
           vault_url=azure_keyvault_url, client_id=azure_client_id)
           | from_json).dsrm_password | default('', true) }}
+    # Optional dedicated domain-join account (secret keys domain_join_username /
+    # domain_join_password), created at the end of this play. See the note there.
+    domain_join_user_secret: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).domain_join_username | default('', true) }}
+    domain_join_password_secret: >-
+      {{ (lookup('zms_keyvault_secret', ansible_secret_name,
+          vault_url=azure_keyvault_url, client_id=azure_client_id)
+          | from_json).domain_join_password | default('', true) }}
+    # The account name in this forest: "zsroot", "SAFEMARCH\zsroot" and "zsroot@safemarch.local"
+    # all give zsroot. An account of another domain gives '' (it cannot be created here).
+    domain_join_account: >-
+      {%- set u = domain_join_user_secret | trim -%}
+      {%- if ad_backslash in u -%}
+      {%-   set parts = u.split(ad_backslash, 1) -%}
+      {{ parts[1] if (parts[0] | upper) == (ad_domain_netbios | upper) else '' }}
+      {%- elif '@' in u -%}
+      {%-   set parts = u.split('@', 1) -%}
+      {{ parts[0] if (parts[1] | lower) == (ad_domain_name | lower) else '' }}
+      {%- else -%}
+      {{ u }}
+      {%- endif -%}
   tasks:
     - name: Skip hosts that could not be reached (no facts gathered = unreachable)
       ansible.builtin.meta: end_host
@@ -72,7 +95,7 @@
 
     # WHY THIS EXISTS
     # Promoting the FIRST DC of a new forest migrates the server's local SAM
-    # accounts into the new directory, so local 'zsroot' becomes ALCOR\zsroot.
+    # accounts into the new directory, so local 'zmsadmin' becomes SAFEMARCH\zmsadmin.
     # But membership of the LOCAL Administrators group does NOT carry over into
     # Domain Admins - the migrated account lands as an ordinary domain user that
     # happens to sit in BUILTIN\Administrators on this DC.
@@ -130,3 +153,57 @@
     # afresh and pick up the new privileges.
     - name: Reset the connection so the new group membership takes effect
       ansible.builtin.meta: reset_connection
+
+    # THE NAMED DOMAIN-JOIN ACCOUNT
+    # domain_join_username in secrets.auto.tfvars may name a dedicated account for the domain
+    # joins and the ADC/RODC promotions (windows-domain-join.yml, windows-adc.yml,
+    # windows-rodc.yml). Nothing else creates it: without this step those plays fail with
+    # "The user name or password is incorrect" after five retries, and the DC logs 0xC0000064
+    # (no such user). So it is created here, in the forest root, with domain_join_password and
+    # the two groups the admin account gets above: Domain Admins to promote a DC, Enterprise
+    # Admins for the forest preparation the first RODC triggers.
+    #
+    # Skipped when domain_join_username is empty (the admin account is used) or names the admin
+    # account itself (it already exists; the join plays check its password). update_password:
+    # on_create never overwrites the password of an account that already exists. Runs after the
+    # connection reset, so with the Domain Admin rights granted above. The output is hidden
+    # because it carries the password; to see an error, re-run with -e adds_no_log=false.
+    - name: Require a password for the named domain-join account
+      ansible.builtin.assert:
+        that: domain_join_password_secret | length > 0
+        fail_msg: >-
+          domain_join_username is set to '{{ domain_join_user_secret }}' but domain_join_password
+          is empty. Set both in secrets.auto.tfvars (or leave both empty to use the admin account),
+          then terraform apply to update the secret.
+        quiet: true
+      when: domain_join_account | length > 0
+
+    - name: Note a domain-join account from another domain (not created)
+      ansible.builtin.debug:
+        msg: >-
+          domain_join_username '{{ domain_join_user_secret }}' belongs to another domain, so it is
+          not created here. That domain must already trust {{ ad_domain_name }} and hold the account.
+      when:
+        - domain_join_user_secret | length > 0
+        - domain_join_account | length == 0
+
+    - name: Create the named domain-join account and make it a Domain and Enterprise Admin
+      microsoft.ad.user:
+        name: "{{ domain_join_account }}"
+        password: "{{ domain_join_password_secret }}"
+        update_password: on_create
+        password_never_expires: true
+        enabled: true
+        state: present
+        groups:
+          add:
+            - Domain Admins
+            - Enterprise Admins
+      when:
+        - domain_join_account | length > 0
+        - (domain_join_account | lower) != (ansible_user | regex_replace('^.*[\\\\]', '') | lower)
+      register: join_account
+      until: join_account is succeeded
+      retries: 5
+      delay: 15
+      no_log: "{{ adds_no_log | default(true) | bool }}"
