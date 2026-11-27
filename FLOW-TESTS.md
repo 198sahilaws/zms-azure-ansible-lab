@@ -16,7 +16,7 @@ sudo /opt/control-repo/scripts/flow-test.sh verify   # after the policy is enfor
 | | `learn` | `verify` |
 |---|---|---|
 | `flow-exercise.yml` F1-F3, F7-F10 | yes | yes |
-| `flow-internet.yml` F10 sites | yes (client skipped) | yes, plus client (N7) |
+| `flow-internet.yml` F10 sites | yes | yes |
 | `flow-bastion.yml` F5, F6 | yes | yes, plus bastion negatives (N6) |
 | `flow-negative.yml` N1-N5 | **never** | yes |
 | Rounds | 6, 30 s apart | 1 |
@@ -51,7 +51,6 @@ changes to any host.
 | N4 | web, middleware, db -> DCs and the Windows bastion 3389 | RDP connection request |
 | N5 | web -> db 3306 | MySQL server greeting |
 | N6 | each bastion -> web 8090, middleware 8091, db 3306, DCs 5986 and 445 | TCP connect |
-| N7 | client -> the internet sites 443 | HTTPS GET (Intranet Users are not an F10 source) |
 
 Every negative target has a listener, so a failure to connect is the policy, not a closed port.
 
@@ -74,7 +73,6 @@ sudo scripts/estate-shell.sh ansible-playbook playbooks/flow-negative.yml -e flo
 | `flow_enforced` | `false` | `true`: a denied flow that connects fails the run |
 | `flow_rounds`, `flow_interval` | 1, 30 | repeat the probes N times, seconds apart |
 | `flow_timeout` | 5 | seconds per connect or read |
-| `flow_client_internet` | `deny` | `allow` if the client should browse (its probes then run as F10) |
 | `flow_validate_certs` | `true` | `false` for ZIA SSL inspection without the Zscaler root CA |
 | `flow_ignore_lock` | `false` | run even while a converge holds the run lock |
 
@@ -113,7 +111,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 scripts/flow-test.sh             one-command runner (learn | verify)
 vars/flows.yml                   sites, negative targets, phase defaults
 playbooks/flow-exercise.yml      F1-F3, F7-F10
-playbooks/flow-internet.yml      F10 sites, N7
+playbooks/flow-internet.yml      F10 sites
 playbooks/flow-bastion.yml       F5, F6, N6 (Linux and Windows bastions)
 playbooks/flow-negative.yml      N1-N5
 playbooks/flow-preflight.yml     lock check, run ID (imported)

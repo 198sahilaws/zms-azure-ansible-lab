@@ -1,7 +1,7 @@
 ---
 # vars/flows.yml - settings shared by the flow-test playbooks:
 #   flow-exercise.yml  Table 5 allowed flows F1-F3, F7-F10
-#   flow-internet.yml  HTTPS to the sites below (F10; the client is tested against Table 5)
+#   flow-internet.yml  HTTPS to the sites below (F10; the client is not tested)
 #   flow-bastion.yml   F5 (SSH) and F6 (RDP) from the Windows and/or Linux bastion, plus N6
 #   flow-negative.yml  flows Table 5 denies (N1-N5)
 # Manual use only. scripts/flow-test.sh runs them in one command (learn | verify).
@@ -13,7 +13,6 @@
 #   N4  web/middleware/db -> Windows hosts (DCs, Windows bastion) RDP 3389
 #   N5  web -> db TCP 3306 (skipping the middleware tier)
 #   N6  bastion -> app ports and DC WinRM/SMB (flow-bastion.yml)
-#   N7  client -> Internet HTTPS (Intranet Users are not an F10 source)
 
 # ---- Phase -----------------------------------------------------------------------------
 # '' (a playbook run on its own) | learn | verify. Set by scripts/flow-test.sh.
@@ -37,10 +36,6 @@ flow_internet_sites:
   - https://cnn.com/
   - https://github.com/198sahilaws/
   - https://ip.zscaler.com/
-# Table 5: Intranet Users (the client) are not an F10 source, so their HTTPS is expected to be
-# denied (N7) and only runs when negatives are included. Set to 'allow' if the client should
-# browse; its probes then run as F10 in every phase.
-flow_client_internet: deny
 # false skips certificate checks (e.g. ZIA SSL inspection without the Zscaler root CA installed)
 flow_validate_certs: true
 

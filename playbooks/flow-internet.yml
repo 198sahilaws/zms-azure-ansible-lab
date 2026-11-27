@@ -3,9 +3,8 @@
 # Manual use only.
 #
 #   F10  web, middleware, db, control node, DCs -> each site, expected to connect
-#   N7   client -> each site. Table 5 does not list Intranet Users as an F10 source, so the
-#        client's HTTPS is expected to be denied and runs only when negatives are included
-#        (-e flow_mode=all, or flow-test.sh verify). Set flow_client_internet=allow to change that.
+#   The client (Intranet Users) is not tested: it is not an F10 source in Table 5, and its
+#   internet access is not a denied flow either.
 #
 # Each probe is a TLS handshake and one GET (no redirects followed: cnn.com -> www.cnn.com is
 # reported, not fetched). ip.zscaler.com is also parsed to show whether the traffic went
@@ -13,14 +12,13 @@
 #
 # Usage (on the control node):
 #   sudo /opt/control-repo/scripts/estate-shell.sh ansible-playbook playbooks/flow-internet.yml
-#   ... -e flow_mode=all            (include the client, N7)
 #   ... -e flow_validate_certs=false (ZIA SSL inspection without the Zscaler root CA)
 
 - name: Pre-flight
   ansible.builtin.import_playbook: flow-preflight.yml
 
 - name: Flow tests | internet sites
-  hosts: "{{ target | default(flow_all_pattern) }}"
+  hosts: "{{ target | default(flow_all_pattern ~ ':!role_client') }}"
   gather_facts: false
   vars_files:
     - ../vars/flows.yml
@@ -28,7 +26,7 @@
     flow_playbook_name: flow-internet
     flow_self_label: >-
       {{ group_names | select('match', '^role_') | map('regex_replace', '^role_', '') | first | default('host') }}
-    flow_my_expect: "{{ flow_client_internet if 'role_client' in group_names else 'allow' }}"
+    # All of these are allowed flows, so a negative-only run (-e flow_mode=negative) sends nothing.
     flow_wanted: "{{ {'positive': ['allow'], 'negative': ['deny'], 'all': ['allow', 'deny']}[flow_mode] }}"
   tasks:
     - name: End here if pre-flight found the converge lock held
@@ -39,12 +37,12 @@
       ansible.builtin.set_fact:
         flow_plan: >-
           {%- set out = [] -%}
-          {%- if flow_my_expect in flow_wanted -%}
+          {%- if 'allow' in flow_wanted and 'role_client' not in group_names -%}
           {%-   for url in flow_internet_sites -%}
-          {%-     set _ = out.append({'flow': 'F10' if flow_my_expect == 'allow' else 'N7',
+          {%-     set _ = out.append({'flow': 'F10',
                     'target': url | urlsplit('hostname'), 'url': url, 'probe': 'https',
                     'verify': flow_validate_certs | bool, 'zscaler': 'ip.zscaler.com' in url,
-                    'expect': flow_my_expect}) -%}
+                    'expect': 'allow'}) -%}
           {%-   endfor -%}
           {%- endif -%}
           {{ out }}

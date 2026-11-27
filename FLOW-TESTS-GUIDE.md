@@ -66,7 +66,6 @@ F4 (operators to the bastion) is not tested: it starts outside Azure.
 | N4 | web, middleware, db | dc, rodc, Windows bastion | TCP 3389 |
 | N5 | web | db | TCP 3306 |
 | N6 | each bastion | web 8090, middleware 8091, db 3306, DCs 5986 and 445 | as listed |
-| N7 | client | the internet sites | TCP 443 |
 
 Every denied-flow target has a service listening, so a denied flow that does not connect was
 blocked by the policy, not by a closed port.
@@ -404,7 +403,6 @@ Add these after `learn` or `verify`, for example
 | `-e flow_timeout=N` | 5 | Seconds to wait for each connection (try 10 if internet probes time out) |
 | `-e flow_bastion_kinds=linux` | both | Run F5/F6 from one bastion only (`linux` or `windows`) |
 | `-e flow_validate_certs=false` | true | Skip certificate checks, for SSL inspection without the inspecting CA on the hosts |
-| `-e flow_client_internet=allow` | deny | Treat the client's internet access as allowed (F10) instead of denied (N7) |
 
 Settings that go **before** `bash`:
 

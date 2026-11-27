@@ -3,7 +3,7 @@
 #
 #   learn    Allowed flows only: F1-F3, F5-F10 and the internet sites, 6 rounds 30 s apart.
 #            Safe while ZMS learns flows for policy recommendations.
-#   verify   Allowed AND denied flows (N1-N7), once. A denied flow that connects fails the run.
+#   verify   Allowed AND denied flows (N1-N6), once. A denied flow that connects fails the run.
 #            Run after the ZMS policy is enforced.
 #
 # Usage (on the control node):

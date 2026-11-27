@@ -6,7 +6,7 @@
 #   N3  web, middleware, db -> every other Linux host incl. the Linux bastion, SSH 22 (banner exchange, no login)
 #   N4  web, middleware, db -> DCs and the Windows bastion, RDP 3389 (connection request, no login)
 #   N5  web -> db 3306 (MySQL greeting, no login): skipping the middleware tier
-#   (N6 bastion negatives are in flow-bastion.yml; N7 client HTTPS is in flow-internet.yml)
+#   (N6 bastion negatives are in flow-bastion.yml)
 #
 # Every target port has a listener, so a failure to connect is the policy, not a closed port.
 # Before enforcement every probe connects and is reported INFO. With flow_enforced=true
