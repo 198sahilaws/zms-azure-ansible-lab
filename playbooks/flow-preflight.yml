@@ -58,6 +58,16 @@
           positive, negative or all (got '{{ flow_mode }}'), flow_rounds and flow_timeout at least 1.
         quiet: true
 
+    # A broken inventory (for example missing Azure SDK packages) leaves only the implicit
+    # localhost. Without this check every play is skipped and the run reports ok with 0 probes.
+    - name: Stop if the inventory is empty
+      ansible.builtin.assert:
+        that: groups['all'] | length > 0
+        fail_msg: >-
+          The inventory has no hosts, so there is nothing to test. Check the inventory warnings at
+          the top of this output and run: sudo /opt/control-repo/scripts/estate-shell.sh ansible-inventory --graph
+        quiet: true
+
     - name: Phase
       ansible.builtin.debug:
         msg: >-

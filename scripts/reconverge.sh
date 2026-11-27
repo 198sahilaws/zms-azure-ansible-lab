@@ -129,15 +129,25 @@ azure_reqs() {
   return 1
 }
 
-if ! python3 -c 'import azure.identity, azure.mgmt.compute, azure.mgmt.network, azure.mgmt.resource' 2>/dev/null; then
-  if REQS="$(azure_reqs)"; then
-    echo "Installing azure.azcollection Python requirements from ${REQS}"
-    sudo -n python3 -m pip install --break-system-packages --ignore-installed -r "$REQS"
-  else
-    echo "ERROR: azure.azcollection is not installed anywhere Python can see;" \
-         "the azure_rm inventory and Key Vault lookups will not work." >&2
-    exit 1
-  fi
+# The import check alone is not enough: a new azure.azcollection release can add
+# SDK packages the four imports below do not cover. azure_rm_common.py imports
+# its whole SDK set in one try block, so one missing package disables all of it
+# and the inventory fails with "name 'managed_identity' is not defined" (4.3.0
+# added azure-mgmt-redisenterprise, -containerservicefleet and -synapse). So
+# also reinstall whenever the requirements file differs from the one last
+# installed, recorded in .git, which reset --hard leaves alone.
+REQS_STAMP="${REPO_DIR}/.git/zms-azure-requirements.sha256"
+if ! REQS="$(azure_reqs)"; then
+  echo "ERROR: azure.azcollection is not installed anywhere Python can see;" \
+       "the azure_rm inventory and Key Vault lookups will not work." >&2
+  exit 1
+fi
+REQS_SUM="$(sha256sum "$REQS")"
+if ! python3 -c 'import azure.identity, azure.mgmt.compute, azure.mgmt.network, azure.mgmt.resource' 2>/dev/null \
+   || [ "$(cat "$REQS_STAMP" 2>/dev/null)" != "$REQS_SUM" ]; then
+  echo "Installing azure.azcollection Python requirements from ${REQS}"
+  sudo -n python3 -m pip install --break-system-packages --ignore-installed -r "$REQS"
+  echo "$REQS_SUM" > "$REQS_STAMP"
 fi
 
 # WinRM NTLM needs pywinrm >= 0.5 with requests-ntlm >= 1.2, which computes

@@ -43,9 +43,18 @@ collections:
   # ships a satisfying version, so galaxy skips it and the copy that loads is the
   # one in /usr/lib/python3/dist-packages — which is why scripts/reconverge.sh
   # finds the requirements file wherever the collection actually lives instead
-  # of assuming the repo tree, and installs it only when an import check fails.
+  # of assuming the repo tree, and reinstalls it when an import check fails or
+  # the file has changed since the last install.
+  #
+  # PINNED to an exact version. A range let the 30-minute refresh pull 4.3.0 on
+  # its release day; it needs SDK packages the node did not have, and the
+  # inventory broke ("name 'managed_identity' is not defined"). To move to a new
+  # version: change the pin, push, and check `ansible-inventory --graph` on the
+  # control node after the next refresh. reconverge.sh reinstalls the matching
+  # SDK set whenever the collection's requirements.txt changes, and galaxy
+  # replaces an installed copy of a different version, downgrades included.
   - name: azure.azcollection
-    version: ">=3.0.0,<5.0.0"
+    version: "==4.2.0"
   - name: ansible.windows       # win_* core modules
     version: ">=2.0.0,<4.0.0"
   - name: microsoft.ad          # AD DS forest/domain promotion (windows-adds)
