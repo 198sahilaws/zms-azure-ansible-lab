@@ -170,8 +170,10 @@ PY
 
 if ! winrm_ntlm_ok; then
   echo "Installing pywinrm with pyspnego-based NTLM for the Windows estate"
+  # Exact versions: the set that worked on a lab on 2026-11-27, so every new
+  # control node gets the same WinRM stack rather than whatever is newest.
   sudo -n python3 -m pip install --break-system-packages --ignore-installed \
-    'pywinrm>=0.5.0' 'requests-ntlm>=1.3.0' 'pyspnego>=0.11' \
+    'pywinrm==0.5.0' 'requests-ntlm==1.3.0' 'pyspnego==0.12.4' \
     || echo "WARNING: pywinrm upgrade failed; Windows hosts will be unreachable over WinRM (NTLM)." >&2
 fi
 
