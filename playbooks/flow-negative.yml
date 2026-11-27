@@ -1,8 +1,9 @@
 ---
 # flow-negative.yml - flows Table 5 denies. Manual use only.
 #
-#   N1  every host -> portquiz.net:666 (HTTP on a non-443 port)
-#   N2  every host -> neverssl.com:80, httpforever.com:80 (plain HTTP)
+#   N1  every host except the client -> portquiz.net:666 (HTTP on a non-443 port)
+#   N2  every host except the client -> neverssl.com:80, httpforever.com:80 (plain HTTP)
+#       (the client's internet access is not a denied flow: see flow_negative_url_skip_roles)
 #   N3  web, middleware, db -> every other Linux host incl. the Linux bastion, SSH 22 (banner exchange, no login)
 #   N4  web, middleware, db -> DCs and the Windows bastion, RDP 3389 (connection request, no login)
 #   N5  web -> db 3306 (MySQL greeting, no login): skipping the middleware tier
@@ -61,10 +62,12 @@
       ansible.builtin.set_fact:
         flow_plan: >-
           {%- set out = [] -%}
-          {%- for n in flow_negative_urls -%}
-          {%-   set _ = out.append({'flow': n.id, 'target': n.url | urlsplit('hostname'), 'url': n.url,
-                  'probe': 'http', 'expect': 'deny'}) -%}
-          {%- endfor -%}
+          {%- if group_names | intersect(flow_negative_url_skip_roles | map('regex_replace', '^', 'role_') | list) | length == 0 -%}
+          {%-   for n in flow_negative_urls -%}
+          {%-     set _ = out.append({'flow': n.id, 'target': n.url | urlsplit('hostname'), 'url': n.url,
+                    'probe': 'http', 'expect': 'deny'}) -%}
+          {%-   endfor -%}
+          {%- endif -%}
           {%- if flow_is_lateral_source | bool -%}
           {%-   for h in flow_linux_targets -%}
           {%-     set _ = out.append({'flow': 'N3', 'address': h, 'port': 22, 'probe': 'ssh', 'expect': 'deny',

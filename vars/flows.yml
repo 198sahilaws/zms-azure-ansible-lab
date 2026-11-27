@@ -7,8 +7,8 @@
 # Manual use only. scripts/flow-test.sh runs them in one command (learn | verify).
 #
 # Negative flow IDs:
-#   N1  any host -> Internet on a non-443 port (portquiz.net:666)
-#   N2  any host -> Internet on plain HTTP 80 (neverssl.com, httpforever.com)
+#   N1  any host except the client -> Internet on a non-443 port (portquiz.net:666)
+#   N2  any host except the client -> Internet on plain HTTP 80 (neverssl.com, httpforever.com)
 #   N3  web/middleware/db -> other Linux hosts (incl. the Linux bastion) SSH 22
 #   N4  web/middleware/db -> Windows hosts (DCs, Windows bastion) RDP 3389
 #   N5  web -> db TCP 3306 (skipping the middleware tier)
@@ -44,6 +44,8 @@ flow_negative_urls:
   - {id: N1, url: "http://portquiz.net:666/"}
   - {id: N2, url: "http://neverssl.com/"}
   - {id: N2, url: "http://httpforever.com/"}
+# Roles that do not send N1/N2: the client's (Intranet Users') internet access is not denied.
+flow_negative_url_skip_roles: [client]
 flow_lateral_source_roles: [web, middleware, db]
 flow_lateral_linux_pattern: "role_web:role_middleware:role_db:role_client:role_ansible_control"
 flow_lateral_windows_pattern: "role_dc:role_adc:role_rodc:os_bastion"

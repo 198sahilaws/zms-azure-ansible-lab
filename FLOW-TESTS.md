@@ -45,8 +45,8 @@ changes to any host.
 | F8 | control node -> DCs 5986 | Ansible's own WinRM session |
 | F9 | dc <-> rodc | `dcdiag /s:<peer>` and `repadmin /showrepl <peer>` on each DC; `repadmin /replicate` from the forest root |
 | F10 | web, middleware, db, control node, DCs -> Internet 443 | HTTPS GET (github.com, plus the sites in `vars/flows.yml`) |
-| N1 | every host -> portquiz.net:666 | HTTP GET |
-| N2 | every host -> neverssl.com:80, httpforever.com:80 | HTTP GET |
+| N1 | every host except the client -> portquiz.net:666 | HTTP GET |
+| N2 | every host except the client -> neverssl.com:80, httpforever.com:80 | HTTP GET |
 | N3 | web, middleware, db -> every other Linux host, incl. the Linux bastion, 22 | SSH banner exchange |
 | N4 | web, middleware, db -> DCs and the Windows bastion 3389 | RDP connection request |
 | N5 | web -> db 3306 | MySQL server greeting |

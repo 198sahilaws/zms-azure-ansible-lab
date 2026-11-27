@@ -60,8 +60,8 @@ F4 (operators to the bastion) is not tested: it starts outside Azure.
 
 | ID | Source | Destination | Port |
 |---|---|---|---|
-| N1 | every host | portquiz.net | TCP 666 |
-| N2 | every host | neverssl.com, httpforever.com | TCP 80 |
+| N1 | every host except the client | portquiz.net | TCP 666 |
+| N2 | every host except the client | neverssl.com, httpforever.com | TCP 80 |
 | N3 | web, middleware, db | every other Linux host, including the control node and Linux bastion | TCP 22 |
 | N4 | web, middleware, db | dc, rodc, Windows bastion | TCP 3389 |
 | N5 | web | db | TCP 3306 |
